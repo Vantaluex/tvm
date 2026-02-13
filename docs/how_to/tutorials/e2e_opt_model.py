@@ -80,7 +80,8 @@ with torch.no_grad():
 mod, params = relax.frontend.detach_params(mod)
 mod.show()
 
-######################################################################
+####################################7
+# ##################################
 # IRModule Optimization
 # ---------------------
 # Apache TVM Unity provides a flexible way to optimize the IRModule. Everything centered
@@ -93,7 +94,10 @@ mod.show()
 #
 
 TOTAL_TRIALS = 8000  # Change to 20000 for better performance if needed
-target = tvm.target.Target("nvidia/geforce-rtx-3090-ti")  # Change to your target device
+#target = tvm.target.Target("cuda -arch=sm_89")  # Change to your target device
+from tvm import target as tgt
+dev = tvm.cuda(0)
+target = tgt.Target.from_device(dev)
 work_dir = "tuning_logs"
 
 # Skip running in CI environment
@@ -111,12 +115,17 @@ if not IS_IN_CI:
 # We skip this step in the CI environment.
 
 if not IS_IN_CI:
-    ex = relax.build(mod, target="cuda")
-    dev = tvm.device("cuda", 0)
+    ex = relax.build(mod, target=target)
+    #dev = tvm.device("cuda", 0)
     vm = relax.VirtualMachine(ex, dev)
     # Need to allocate data and params on GPU device
     gpu_data = tvm.nd.array(np.random.rand(1, 3, 224, 224).astype("float32"), dev)
     gpu_params = [tvm.nd.array(p, dev) for p in params["main"]]
-    gpu_out = vm["main"](gpu_data, *gpu_params).numpy()
-
-    print(gpu_out.shape)
+    gpu_out = vm["main"](gpu_data, *gpu_params)#.numpy()
+    outs_np = [x.numpy() for x in gpu_out]
+    for i, x in enumerate(gpu_out):
+        print(i, x.shape)
+    for i, x in enumerate(gpu_out):
+        print(gpu_out[i].numpy())
+    for i, x in enumerate(gpu_out):
+        print(i, x.shape)
