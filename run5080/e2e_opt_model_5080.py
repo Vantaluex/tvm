@@ -24,7 +24,7 @@ dev = tvm.cuda(0)
 target = tvm.target.Target.from_device(dev)
 
 IS_IN_CI = os.getenv("CI", "") == "true"
-TOTAL_TRIALS = 20000
+TOTAL_TRIALS = 64
 
 if not IS_IN_CI:
     mod = relax.get_pipeline(
@@ -51,6 +51,13 @@ if not IS_IN_CI:
         return tvm.nd.array(p, dev)
 
     gpu_params = [to_dev(p) for p in params["main"]]
+
+    vm.save_function("main", "main_saved", x, *gpu_params)
+    ft = vm.time_evaluator("main_saved", dev, number=50, repeat=3, min_repeat_ms=500)
+    print("timing:", ft())
+
+    print("nvml after time_evaluator:", tvm.get_global_func("runtime.profiling.get_last_nvml_metrics")())
+
     y = vm["main"](x, *gpu_params)
 
     if isinstance(y, tvm.runtime.NDArray):
@@ -58,3 +65,5 @@ if not IS_IN_CI:
     else:
         y0 = y[0]
         print("out[0]:", y0.shape, y0.dtype, float(y0.numpy().reshape(-1)[0]))
+
+print(tvm.get_global_func("runtime.profiling.get_last_nvml_metrics")())
