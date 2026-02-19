@@ -37,6 +37,12 @@
 #include <numeric>
 #include <thread>
 
+// for power integration
+#include <atomic>
+#include <dlfcn.h>
+#include <vector>
+
+
 namespace tvm {
 namespace runtime {
 
@@ -859,6 +865,147 @@ TVM_REGISTER_GLOBAL("runtime.profiling.ProfileFunction")
       }
     });
 
+namespace { //power integration function to the output.
+struct NvmlFns {
+  void* handle{nullptr};
+
+  // NVML types (avoid including nvml.h; we dlopen/dlsym)
+  using nvmlReturn_t = int;
+  using nvmlDevice_t = struct nvmlDevice_st*;
+  static constexpr nvmlReturn_t NVML_SUCCESS = 0;
+
+  // function pointer types
+  nvmlReturn_t (*nvmlInit_v2)() = nullptr;
+  nvmlReturn_t (*nvmlShutdown)() = nullptr;
+  nvmlReturn_t (*nvmlDeviceGetHandleByIndex_v2)(unsigned int, nvmlDevice_t*) = nullptr;
+  nvmlReturn_t (*nvmlDeviceGetPowerUsage)(nvmlDevice_t, unsigned int*) = nullptr;   // mW [web:30]
+  nvmlReturn_t (*nvmlDeviceGetClockInfo)(nvmlDevice_t, int /*clockType*/, unsigned int*) = nullptr;
+
+  bool Load() {
+    if (handle) return true;
+    handle = dlopen("libnvidia-ml.so.1", RTLD_LAZY);
+    if (!handle) return false;
+
+    auto load_sym = [&](auto& fn, const char* name) {
+      fn = reinterpret_cast<std::decay_t<decltype(fn)>>(dlsym(handle, name));
+      return fn != nullptr;
+    };
+
+    bool ok = true;
+    ok &= load_sym(nvmlInit_v2, "nvmlInit_v2");
+    ok &= load_sym(nvmlShutdown, "nvmlShutdown");
+    ok &= load_sym(nvmlDeviceGetHandleByIndex_v2, "nvmlDeviceGetHandleByIndex_v2");
+    ok &= load_sym(nvmlDeviceGetPowerUsage, "nvmlDeviceGetPowerUsage");
+    ok &= load_sym(nvmlDeviceGetClockInfo, "nvmlDeviceGetClockInfo");
+    return ok;
+  }
+};
+
+struct NvmlLast {
+  bool valid{false};
+  double avg_power_w{0.0};
+  double avg_clock_mhz{0.0};
+};
+
+static std::mutex g_last_nvml_mu;
+static NvmlLast g_last_nvml;
+
+struct NvmlSample {
+  int64_t t_ns;
+  unsigned int power_mw;
+  unsigned int clk_graphics_mhz;
+};
+
+static NvmlSample ReadNvmlOnce(NvmlFns& fns, NvmlFns::nvmlDevice_t dev) {
+  NvmlSample s;
+  s.t_ns = static_cast<int64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+  unsigned int p = 0, c = 0;
+  if (fns.nvmlDeviceGetPowerUsage(dev, &p) == NvmlFns::NVML_SUCCESS) {
+    s.power_mw = p;
+  } else {
+    s.power_mw = 0;
+  }
+  if (fns.nvmlDeviceGetClockInfo(dev, /*NVML_CLOCK_GRAPHICS*/ 0, &c) == NvmlFns::NVML_SUCCESS) {
+    s.clk_graphics_mhz = c;
+  } else {
+    s.clk_graphics_mhz = 0;
+  }
+  return s;
+}
+
+
+static NvmlLast SampleNvmlDuring(std::function<void()> body, int gpu_index = 0, int period_ms = 20) {
+  NvmlLast out;
+  NvmlFns fns;
+  if (!fns.Load()) {
+    body();
+    return out;  // valid=false
+  }
+
+  if (fns.nvmlInit_v2() != NvmlFns::NVML_SUCCESS) {
+    body();
+    return out;
+  }
+
+  NvmlFns::nvmlDevice_t dev;
+  if (fns.nvmlDeviceGetHandleByIndex_v2(gpu_index, &dev) != NvmlFns::NVML_SUCCESS) {
+    fns.nvmlShutdown();
+    body();
+    return out;
+  }
+
+  std::atomic<bool> stop{false};
+  std::vector<NvmlSample> samples;
+  samples.reserve(4096);
+
+  // Always record a sample right before and right after body(), so we have >=2 samples.
+  samples.push_back(ReadNvmlOnce(fns, dev));
+
+  std::thread th([&]() {
+    while (!stop.load(std::memory_order_relaxed)) {
+      samples.push_back(ReadNvmlOnce(fns, dev));
+      std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
+    }
+  });
+
+  // Run the timed body (WrapTimeEvaluator’s timing region will call this)
+  body();
+
+  stop.store(true, std::memory_order_relaxed);
+  th.join();
+
+  // End sample
+  samples.push_back(ReadNvmlOnce(fns, dev));
+
+  fns.nvmlShutdown();
+
+  double energy_j = 0.0;
+  double clk_time = 0.0;
+  double total_s = 0.0;
+
+  for (size_t i = 1; i < samples.size(); ++i) {
+    int64_t dt_ns = samples[i].t_ns - samples[i - 1].t_ns;
+    if (dt_ns <= 0) continue;
+    double dt_s = static_cast<double>(dt_ns) * 1e-9;
+    double p_w = static_cast<double>(samples[i - 1].power_mw) / 1000.0;  // mW -> W [web:30]
+    energy_j += p_w * dt_s;
+    clk_time += static_cast<double>(samples[i - 1].clk_graphics_mhz) * dt_s;
+    total_s += dt_s;
+  }
+
+  if (total_s > 0) {
+    out.valid = true;
+    out.avg_power_w = energy_j / total_s;
+    out.avg_clock_mhz = clk_time / total_s;
+  }
+  return out;
+}
+}  // namespace
+
+
 PackedFunc WrapTimeEvaluator(PackedFunc pf, Device dev, int number, int repeat, int min_repeat_ms,
                              int limit_zero_time_iterations, int cooldown_interval_ms,
                              int repeats_to_cooldown, int cache_flush_bytes, PackedFunc f_preproc) {
@@ -887,41 +1034,44 @@ PackedFunc WrapTimeEvaluator(PackedFunc pf, Device dev, int number, int repeat, 
 
     DeviceAPI::Get(dev)->StreamSync(dev, nullptr);
 
-    for (int i = 0; i < repeat; ++i) {
-      if (f_preproc != nullptr) {
-        f_preproc.CallPacked(args, &temp);
-      }
-      double duration_ms = 0.0;
-      int absolute_zero_times = 0;
-      do {
-        if (duration_ms > 0.0) {
-          const double golden_ratio = 1.618;
-          number = static_cast<int>(
-              std::max((min_repeat_ms / (duration_ms / number) + 1), number * golden_ratio));
+    NvmlLast m = SampleNvmlDuring([&]() { // changed to power integration code. this should test teh power parts as well.
+      for (int i = 0; i < repeat; ++i) {
+        if (f_preproc != nullptr) {
+          f_preproc.CallPacked(args, &temp);
         }
-        if (cache_flush_bytes > 0) {
-          arr1.CopyFrom(arr2);
-        }
-        DeviceAPI::Get(dev)->StreamSync(dev, nullptr);
-        // start timing
-        Timer t = Timer::Start(dev);
-        for (int j = 0; j < number; ++j) {
-          pf.CallPacked(args, &temp);
-        }
-        t->Stop();
-        int64_t t_nanos = t->SyncAndGetElapsedNanos();
-        if (t_nanos == 0) absolute_zero_times++;
-        duration_ms = t_nanos / 1e6;
-      } while (duration_ms < min_repeat_ms && absolute_zero_times < limit_zero_time_iterations);
+        double duration_ms = 0.0;
+        int absolute_zero_times = 0;
+        do {
+          if (duration_ms > 0.0) {
+            const double golden_ratio = 1.618;
+            number = static_cast<int>(std::max(min_repeat_ms / duration_ms * number * 1.0, number * golden_ratio));
+          }
+          if (cache_flush_bytes > 0) {
+            arr1.CopyFrom(arr2);
+            DeviceAPI::Get(dev)->StreamSync(dev, nullptr);
+          }
+          Timer t = Timer::Start(dev);
+          for (int j = 0; j < number; ++j) {
+            pf.CallPacked(args, &temp);
+          }
+          t->Stop();
+          int64_t t_nanos = t->SyncAndGetElapsedNanos();
+          if (t_nanos == 0) absolute_zero_times++;
+          duration_ms = t_nanos / 1e6;
+        } while (duration_ms < min_repeat_ms && absolute_zero_times < limit_zero_time_iterations);
 
-      double speed = duration_ms / 1e3 / number;
-      os.write(reinterpret_cast<char*>(&speed), sizeof(speed));
+        double speed = duration_ms / 1e3 / number;
+        os.write(reinterpret_cast<char*>(&speed), sizeof(speed));
 
-      if (cooldown_interval_ms > 0 && (i % repeats_to_cooldown) == 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(cooldown_interval_ms));
+        if (cooldown_interval_ms > 0 && i % repeats_to_cooldown == 0) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(cooldown_interval_ms));
+        }
       }
+    });
+    {
+      std::lock_guard<std::mutex> lock(g_last_nvml_mu);
+      g_last_nvml = m;
     }
-
     std::string blob = os.str();
     TVMByteArray arr;
     arr.size = blob.length();
@@ -953,6 +1103,24 @@ TVM_REGISTER_GLOBAL("runtime.profiling.Duration").set_body_typed([](double durat
 
 TVM_REGISTER_GLOBAL("runtime.profiling.Ratio").set_body_typed([](double ratio) {
   return ObjectRef(make_object<RatioNode>(ratio));
+});
+
+TVM_REGISTER_GLOBAL("runtime.profiling.get_last_nvml_metrics").set_body_typed([]() { //added for power
+  NvmlLast snapshot;
+  {
+    std::lock_guard<std::mutex> lock(g_last_nvml_mu);
+    snapshot = g_last_nvml;
+  }
+
+  Map<String, ObjectRef> ret;
+  if (!snapshot.valid) {
+    ret.Set("avg_power_w", ObjectRef(make_object<RatioNode>(0.0)));
+    ret.Set("avg_clock_mhz", ObjectRef(make_object<RatioNode>(0.0)));
+    return ret;
+  }
+  ret.Set("avg_power_w", ObjectRef(make_object<RatioNode>(snapshot.avg_power_w)));
+  ret.Set("avg_clock_mhz", ObjectRef(make_object<RatioNode>(snapshot.avg_clock_mhz)));
+  return ret;
 });
 
 }  // namespace profiling
