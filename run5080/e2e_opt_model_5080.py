@@ -1,22 +1,26 @@
 import os
 import numpy as np
 import torch
-from torchvision.models.resnet import ResNet18_Weights, resnet18
+from torchvision.models.resnet import ResNet50_Weights, resnet50
 
 import tvm
 from tvm import relax
 from tvm.relax.frontend.torch import from_fx
 from tvm import dlight as dl
 
-# Torch model
-m = resnet18(weights=ResNet18_Weights.DEFAULT).eval()
+# Torch model - NEW: ResNet50
+m = resnet50(weights=ResNet50_Weights.DEFAULT).eval()
 
 with torch.no_grad():
     traced = torch.fx.symbolic_trace(m)
 
-# Params as inputs (versatile)
-mod = from_fx(traced, [((1, 3, 224, 224), "float32")], keep_params_as_input=True)
-mod, params = relax.frontend.detach_params(mod)
+# OLD (batch size too small)# Params as inputs (versatile) 
+# mod = from_fx(traced, [((1, 3, 224, 224), "float32")], keep_params_as_input=True)
+# mod, params = relax.frontend.detach_params(mod)
+# # Use batch size 32 to create heavier TIR kernels
+
+mod = from_fx(traced, [((32, 3, 224, 224), "float32")], keep_params_as_input=True)
+mod, params = relax.frontend.detach_params(mod) # Put this back!
 
 print("num params:", len(params["main"]))
 
@@ -43,7 +47,8 @@ if not IS_IN_CI:
     ex = relax.build(mod, target=target)
     vm = relax.VirtualMachine(ex, dev)
 
-    x = tvm.nd.array(np.random.rand(1,3,224,224).astype("float32"), dev)
+    # FIX: Dummy data must match the batch size 32
+    x = tvm.nd.array(np.random.rand(32, 3, 224, 224).astype("float32"), dev)
 
     def to_dev(p):
         if isinstance(p, tvm.runtime.NDArray):

@@ -4,6 +4,31 @@ import tvm
 from tvm import tir
 from tvm import meta_schedule as ms
 import hashlib
+import subprocess
+import atexit
+
+# === CLOCK LOCKING FOR WSL -> WINDOWS ===
+def lock_clocks_windows(freq=2617):
+    print(f"\n[INFO] Attempting to lock Windows GPU clocks to {freq} MHz...")
+    cmd = f"Start-Process nvidia-smi.exe -ArgumentList '-i 0 -lgc {freq},{freq}' -Verb RunAs -Wait"
+    try:
+        subprocess.run(["powershell.exe", "-Command", cmd], check=True)
+        print("[INFO] GPU clocks locked successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"[WARN] Failed to lock clocks. Ensure you accepted the UAC prompt. Error: {e}")
+
+def unlock_clocks_windows():
+    print(f"\n[INFO] Attempting to unlock Windows GPU clocks...")
+    cmd = "Start-Process nvidia-smi.exe -ArgumentList '-i 0 -rgc' -Verb RunAs -Wait"
+    try:
+        subprocess.run(["powershell.exe", "-Command", cmd], check=True)
+        print("[INFO] GPU clocks unlocked successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"[WARN] Failed to unlock clocks. Error: {e}")
+
+# Ensure clocks unlock even if script crashes
+atexit.register(unlock_clocks_windows)
+# ========================================
 
 dev = tvm.cuda(0)
 
@@ -18,22 +43,29 @@ def make_nd(shape, dtype):
 
 def trace_fingerprint(trace):
     obj = trace.as_python() if hasattr(trace, "as_python") else repr(trace)
-
-    # In some TVM builds, as_python() returns tvm.ir.container.Array (iterable of lines). [web:21]
     if isinstance(obj, str):
         s = obj
     else:
-        # Works for tvm.ir.container.Array, Python list, tuple, etc.
-        s = "\n".join(str(x) for x in obj)  # join lines into one string [web:156]
-
+        s = "\n".join(str(x) for x in obj)
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
-N = 20 # HYPERPARAMETERS dataset amount
-db = ms.database.JSONDatabase(work_dir="tuning_logs")
-recs = db.get_all_tuning_records()[:N]
-extractor = ms.feature_extractor.PerStoreFeature()
+# HYPERPARAMETERS
+N = 100 # Increased from 20 to check a larger sample
+FREQ = 2617 # Base clock lock freq
 
+# Lock clocks before starting measurements
+lock_clocks_windows(freq=FREQ)
+
+db = ms.database.JSONDatabase(work_dir="tuning_logs")
+all_recs = db.get_all_tuning_records()
+# Safely slice up to N, or the length of the array if it's smaller
+actual_N = min(N, len(all_recs))
+recs = [all_recs[i] for i in range(actual_N)]  # Convert to standard Python list
+print(f"[INFO] Loaded {len(recs)} tuning records from database.")
+
+extractor = ms.feature_extractor.PerStoreFeature()
 out_path = "eyas_gpu_dataset_200.csv"
+
 with open(out_path, "w", newline="") as f:
     w = csv.writer(f)
     header = ["i", "workload_hash", "trace_hash", "n_stores", "lat_mean_ms", "avg_power_w"]
@@ -43,30 +75,40 @@ with open(out_path, "w", newline="") as f:
     for i, r in enumerate(recs):
         mod = r.workload.mod
         target = r.target
-
-        workload_hash = int(tvm.ir.structural_hash(mod))  # IRModule supports this [web:113]
+        workload_hash = int(tvm.ir.structural_hash(mod))
         trace_hash = trace_fingerprint(r.trace)
-
+        
         sch = tir.Schedule(mod, debug_mask="all")
         r.trace.apply_to_schedule(sch, remove_postproc=True)
-
         cand = ms.MeasureCandidate(sch=sch, args_info=r.args_info)
         ctx = ms.TuneContext(mod=mod, target=target, task_name=f"rec_{i}")
+        
         (feat_nd,) = extractor.extract_from(ctx, candidates=[cand])
         feat = feat_nd.numpy()
-        agg = np.concatenate([feat.mean(0), feat.std(0), feat.min(0), feat.max(0)])  # Eyas agg [file:3]
-
-        rt_mod = tvm.build(sch.mod, target=target)
-        args = [make_nd(t.shape, t.dtype) for t in r.args_info]
-
-        ftimer = rt_mod.time_evaluator("main", dev, number=1, repeat=3, min_repeat_ms=3000) # HYPERPARAMETERS
-        timing = ftimer(*args)
-
-        nvml = tvm.get_global_func("runtime.profiling.get_last_nvml_metrics")()
-        avg_power = as_float_metric(nvml["avg_power_w"])
-
-        row = [i, workload_hash, trace_hash, int(feat.shape[0]), float(timing.mean) * 1e3, float(avg_power)]
-        row += [float(x) for x in agg.tolist()]
-        w.writerow(row)
+        
+        # Eyas agg (mean, std, min, max)
+        # Note: If n_stores==1, std(0) will naturally be 0.0, which is mathematically correct
+        agg = np.concatenate([feat.mean(0), feat.std(0), feat.min(0), feat.max(0)])
+        
+        try:
+            rt_mod = tvm.build(sch.mod, target=target)
+            args = [make_nd(t.shape, t.dtype) for t in r.args_info]
+            
+            # Eyas uses a thermal warmup. The first 1-2 repeats of time_evaluator 
+            # will serve as thermal warmup since min_repeat_ms=3000 saturates the GPU
+            ftimer = rt_mod.time_evaluator("main", dev, number=1, repeat=3, min_repeat_ms=3000)
+            timing = ftimer(*args)
+            
+            nvml = tvm.get_global_func("runtime.profiling.get_last_nvml_metrics")()
+            avg_power = as_float_metric(nvml["avg_power_w"])
+            
+            row = [i, workload_hash, trace_hash, int(feat.shape[0]), float(timing.mean) * 1e3, float(avg_power)]
+            row += [float(x) for x in agg.tolist()]
+            w.writerow(row)
+            print(f"[{i+1}/{N}] Hash: {workload_hash} | Lat: {float(timing.mean)*1e3:.3f}ms | Pwr: {avg_power:.1f}W")
+            
+        except Exception as e:
+            # Some schedules generated by MetaSchedule might be invalid/fail to compile
+            print(f"[{i+1}/{N}] Schedule failed to build/run: {e}")
 
 print("wrote:", out_path)
