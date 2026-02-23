@@ -28,14 +28,14 @@ dev = tvm.cuda(0)
 target = tvm.target.Target.from_device(dev)
 
 IS_IN_CI = os.getenv("CI", "") == "true"
-TOTAL_TRIALS = 64
+TOTAL_TRIALS = 20000
 
-if not IS_IN_CI:
+if not IS_IN_CI:    
     mod = relax.get_pipeline(
         "static_shape_tuning",
         target=target,
         total_trials=TOTAL_TRIALS,
-    )(mod)
+    )(mod)  
 
     # Add default GPU schedules so TIR has proper thread bindings
     with target:
