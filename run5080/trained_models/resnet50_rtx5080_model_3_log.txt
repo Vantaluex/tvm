@@ -1,0 +1,46 @@
+[INFO] Initializing robust Eyas training pipeline...
+[INFO] Loading dataset from: completed_datasets/gpu_dataset_r50x20000.csv
+[INFO] Computing stratification bins...
+[INFO] Split -> Train: 14510 | Val: 1814 | Test: 1814
+[INFO] Training XGBoost on GPU with Early Stopping...
+[0]     validation_0-rmse:18.93383
+[50]    validation_0-rmse:11.05531
+[100]   validation_0-rmse:10.73616
+[150]   validation_0-rmse:10.72409
+[157]   validation_0-rmse:10.73803
+
+[INFO] Early Stopping finished at Tree #107
+[INFO] Evaluating model on CPU...
+
+==================================
+Train MAPE: 4.42% 
+Val MAPE:   5.86% 
+Test MAPE:  5.74%
+==================================
+
+Sample Predictions:
+   Actual Power (W)  Predicted Power (W)  Error (W)
+0            151.33           149.300003       2.03
+1             88.10            93.830002       5.73
+2             98.44           115.129997      16.68
+3             95.50           120.930000      25.43
+4            103.11           110.680000       7.58
+5            162.41           124.290001      38.12
+6            144.25           143.559998       0.69
+7            115.53           116.959999       1.43
+8            119.00           118.410004       0.59
+9            126.89           124.160004       2.72
+
+Worst 10 test-set errors:
+ Actual Power (W)  Predicted Power (W)  Abs Error (W)  Pct Error (%)
+           204.15           115.449997          88.70          43.45
+           222.90           139.089996          83.81          37.60
+           202.70           121.570000          81.14          40.03
+           210.77           140.699997          70.08          33.25
+            91.84           157.740005          65.90          71.76
+            78.91           136.309998          57.40          72.74
+            74.41           131.479996          57.07          76.69
+           167.05           110.540001          56.51          33.83
+            92.96           138.759995          45.80          49.27
+           164.03           119.809998          44.22          26.96
+[INFO] Done.

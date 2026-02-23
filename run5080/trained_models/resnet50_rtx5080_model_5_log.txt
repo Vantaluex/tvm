@@ -1,0 +1,65 @@
+[INFO] Initializing robust Eyas training pipeline...
+[INFO] Loading dataset from: completed_datasets/gpu_dataset_r50x20000.csv
+[INFO] Computing stratification bins...
+[INFO] Split -> Train: 14510 | Val: 1814 | Test: 1814
+[INFO] Training XGBoost on GPU with Early Stopping...
+[0]     validation_0-mape:0.12751
+[50]    validation_0-mape:0.06453
+[100]   validation_0-mape:0.05891
+[150]   validation_0-mape:0.05748
+[200]   validation_0-mape:0.05684
+[250]   validation_0-mape:0.05638
+[300]   validation_0-mape:0.05615
+[350]   validation_0-mape:0.05598
+[400]   validation_0-mape:0.05594
+[450]   validation_0-mape:0.05579
+[500]   validation_0-mape:0.05575
+[550]   validation_0-mape:0.05573
+[580]   validation_0-mape:0.05578
+
+[INFO] Early Stopping finished at Tree #530
+[INFO] Evaluating model on CPU...
+
+==================================
+Train MAPE: 3.43%  
+Val MAPE:   5.57% 
+Test MAPE:  5.48%  
+==================================
+
+Sample Predictions:
+   Actual Power (W)  Predicted Power (W)  Error (W)
+0            151.33           150.410004       0.92
+1             88.10            92.870003       4.77
+2             98.44           114.449997      16.01
+3             95.50           124.379997      28.88
+4            103.11           111.680000       8.58
+5            162.41           123.300003      39.11
+6            144.25           144.000000       0.25
+7            115.53           116.250000       0.73
+8            119.00           118.330002       0.67
+9            126.89           125.150002       1.73
+
+Worst 10 test-set errors:
+ Actual Power (W)  Predicted Power (W)  Abs Error (W)  Pct Error (%)
+           204.15           111.230003          92.91          45.51
+           222.90           145.360001          77.54          34.79
+           202.70           125.559998          77.14          38.06
+           210.77           139.600006          71.17          33.77
+            91.84           155.460007          63.62          69.27
+            78.91           139.160004          60.25          76.35
+            74.41           134.399994          59.99          80.62
+           167.05           110.820000          56.24          33.66
+            92.96           141.979996          49.02          52.73
+           164.03           117.480003          46.55          28.38
+
+[DIAGNOSTICS] True Workloads causing the worst errors:
+Actual: 204.1W | Pred: 111.2W | Err: 92.9W | Latency: 4.75ms | Hash: 5246604503319802015
+Actual: 222.9W | Pred: 145.4W | Err: 77.5W | Latency: 5.12ms | Hash: 1479909360810603761
+Actual: 202.7W | Pred: 125.6W | Err: 77.1W | Latency: 5.37ms | Hash: -7525876753468570809
+Actual: 210.8W | Pred: 139.6W | Err: 71.2W | Latency: 9.25ms | Hash: 1479909360810603761
+Actual: 91.8W | Pred: 155.5W | Err: 63.6W | Latency: 19.70ms | Hash: 1841716230813659744
+Actual: 78.9W | Pred: 139.2W | Err: 60.3W | Latency: 9.33ms | Hash: 1479909360810603761
+Actual: 74.4W | Pred: 134.4W | Err: 60.0W | Latency: 45.50ms | Hash: 6590331934960438426
+Actual: 167.1W | Pred: 110.8W | Err: 56.2W | Latency: 218.59ms | Hash: 2837354245082619244
+Actual: 93.0W | Pred: 142.0W | Err: 49.0W | Latency: 14.53ms | Hash: -4553995733109843370
+Actual: 164.0W | Pred: 117.5W | Err: 46.6W | Latency: 8.99ms | Hash: -7283740737357893276
