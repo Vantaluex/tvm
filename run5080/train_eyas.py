@@ -132,11 +132,14 @@ print("[INFO] Saved 'feature_importance.png'. Done.")
 
 
 # code used to check suspicious schedules
-# # Inspect all rows with the repeat hash
-# suspect = df[df['workload_hash'] == 1479909360810603761][
-#     ['workload_hash', 'avg_power_w', 'lat_mean_ms'] + feature_cols[:10]
-# ]
-# print(suspect.sort_values('avg_power_w'))
-# # Check if features are actually identical despite different power
-# print("Feature variance across same hash:")
-# print(suspect[feature_cols].std().describe())
+# Inspect all rows with the repeat hash
+suspect_full = df[df['workload_hash'] == 1479909360810603761].copy()
+varying_feats = feat_std[feat_std > 1e-6].index.tolist()
+
+# Pearson correlation of each varying feature with power
+correlations = suspect_full[varying_feats].corrwith(suspect_full['avg_power_w'])
+print("Top correlated features within this hash:")
+print(correlations.abs().sort_values(ascending=False).head(20))
+
+# Also check: is latency itself correlated with power here?
+print(f"\nLatency-power correlation: {suspect_full['lat_mean_ms'].corr(suspect_full['avg_power_w']):.4f}")
