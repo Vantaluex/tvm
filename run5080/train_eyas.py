@@ -77,6 +77,11 @@ print(f"\n[INFO] Early Stopping finished training at Tree #{model.best_iteration
 
 # 8. Overfitting Diagnostics: Train vs Test MAPE
 print("[INFO] Evaluating model...")
+
+# Move the model back to the CPU for inference to avoid the warning
+# This exactly matches Eyas Section 6.3.3 (CPU inference)
+model.set_params(device='cpu')
+
 train_preds = model.predict(X_train)
 test_preds = model.predict(X_test)
 
