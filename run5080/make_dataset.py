@@ -51,13 +51,15 @@ def trace_fingerprint(trace):
   
 # HYPERPARAMETERS
 N = 20000 # Increased from 20 to check a larger sample
-start_N = 18138 # Start from what?
+start_N = 17934 # Start from what?
+DATANAME = "r50_2295" #model_freq
+MODELNAME = "r50"
 # FREQ = 2618 # Base clock lock freq
 
 # # Lock clocks before starting measurements
 # lock_clocks_windows(freq=FREQ)
 
-db = ms.database.JSONDatabase(work_dir="tuning_logs")
+db = ms.database.JSONDatabase(work_dir="tuning_logs_" + MODELNAME)
 all_recs = db.get_all_tuning_records()
 # Safely slice up to N, or the length of the array if it's smaller
 actual_N = min(N, len(all_recs))
@@ -67,7 +69,7 @@ print(f"[INFO] Loaded {len(recs)} tuning records from database.")
 
 strstart_N = str(start_N)
 extractor = ms.feature_extractor.PerStoreFeature()
-out_path = "gpu_dataset_r50x"+strstart_N+"~.csv"
+out_path = "dataset_" + DATANAME + "x" + strstart_N + "~20000.csv"
 
 with open(out_path, "w", newline="") as f:
     w = csv.writer(f)
@@ -84,7 +86,7 @@ with open(out_path, "w", newline="") as f:
         sch = tir.Schedule(mod, debug_mask="all")
         r.trace.apply_to_schedule(sch, remove_postproc=True)
         cand = ms.MeasureCandidate(sch=sch, args_info=r.args_info)
-        ctx = ms.TuneContext(mod=mod, target=target, task_name=f"rec_{i}")
+        ctx = ms.TuneContext(mod=mod, target=target, task_name=f"rec_{i}") 
         
         (feat_nd,) = extractor.extract_from(ctx, candidates=[cand])
         feat = feat_nd.numpy()
