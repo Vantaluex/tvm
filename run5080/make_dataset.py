@@ -51,7 +51,7 @@ def trace_fingerprint(trace):
   
 # HYPERPARAMETERS
 N = 20000 # Increased from 20 to check a larger sample
-start_N = 17934 # Start from what?
+start_N = 0 # Start from what?
 DATANAME = "r50_2295" #model_freq
 MODELNAME = "r50"
 # FREQ = 2618 # Base clock lock freq
