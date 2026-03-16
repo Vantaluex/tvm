@@ -1,734 +1,324 @@
-import os
-import copy
-from collections import defaultdict
+import csv
+import time
+import queue
+import hashlib
+import multiprocessing as mp
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
+import numpy as np
 import tvm
-from tvm import relax
-from tvm.relax.frontend.torch import from_fx
-import tvm.meta_schedule as ms
-
-from transformers import (
-    AutoConfig,
-    AutoModelForImageClassification,
-    AutoModelForObjectDetection,
-    AutoModelForSemanticSegmentation,
-    AutoModelForUniversalSegmentation,
-)
-
-# ============================================================================
-# CONFIGURATION: EDIT THESE FIRST
-# ============================================================================
-
-IS_IN_CI = os.getenv("CI", "") == "true"
-
-TOTAL_TRIALS = 64
-BATCH_SIZE = 4
-SEQ_LEN = 512
-IMAGE_SIZE = 224
-
-SELECTED_MODELS = [
-    "rtdetr_r50",
-    "segformer_b2",
-    "convnextv2_tiny",
-    "mask2former_swin_small",
-    "deepseekr1_qwen_14b",
-    "qwen2_5_3b",
-    "llama_3_1_8b",
-    "deberta_v3_base",
-    "modernbert_base",
-]
-
-# ============================================================================
-# MODEL REGISTRY
-# ============================================================================
-
-MODEL_SPECS = {
-    "deepseekr1_qwen_14b": {
-        "kind": "manual_decoder",
-        "model_name": "deepseekr1-qwen-14b",
-        "hidden_size": 5120,
-        "intermediate_size": 13824,
-        "num_attention_heads": 40,
-        "num_key_value_heads": 8,
-        "max_position_embeddings": 131072,
-        "batch_size": 4,
-        "seq_len": 512,
-    },
-    "qwen2_5_3b": {
-        "kind": "manual_decoder",
-        "model_name": "qwen2.5-3b",
-        "hidden_size": 2048,
-        "intermediate_size": 11008,
-        "num_attention_heads": 16,
-        "num_key_value_heads": 16,
-        "max_position_embeddings": 32768,
-        "batch_size": 4,
-        "seq_len": 512,
-    },
-    "llama_3_1_8b": {
-        "kind": "manual_decoder",
-        "model_name": "llama-3.1-8b",
-        "hidden_size": 4096,
-        "intermediate_size": 14336,
-        "num_attention_heads": 32,
-        "num_key_value_heads": 8,
-        "max_position_embeddings": 131072,
-        "batch_size": 4,
-        "seq_len": 512,
-    },
-    "deberta_v3_base": {
-        "kind": "manual_encoder_from_hf_config",
-        "hf_id": "microsoft/deberta-v3-base",
-        "model_name": "deberta-v3-base",
-        "batch_size": 8,
-        "seq_len": 256,
-    },
-    "modernbert_base": {
-        "kind": "manual_encoder_from_hf_config",
-        "hf_id": "answerdotai/ModernBERT-base",
-        "model_name": "modernbert-base",
-        "batch_size": 8,
-        "seq_len": 512,
-    },
-    "convnextv2_tiny": {
-        "kind": "captured_image_classification",
-        "hf_id": "facebook/convnextv2-tiny-22k-224",
-        "model_name": "convnextv2-tiny",
-        "batch_size": 8,
-        "image_size": 224,
-    },
-    "rtdetr_r50": {
-        "kind": "captured_object_detection",
-        "hf_id": "PekingU/rtdetr_r50vd",
-        "model_name": "rtdetr-r50",
-        "batch_size": 2,
-        "image_size": 640,
-    },
-    "mask2former_swin_small": {
-        "kind": "captured_universal_segmentation",
-        "hf_id": "facebook/mask2former-swin-small-cityscapes-semantic",
-        "model_name": "mask2former-swin-small",
-        "batch_size": 2,
-        "image_size": 512,
-    },
-    "segformer_b2": {
-        "kind": "captured_semantic_segmentation",
-        "hf_id": "nvidia/segformer-b2-finetuned-ade-512-512",
-        "model_name": "segformer-b2",
-        "batch_size": 2,
-        "image_size": 512,
-    },
-}
-
-# ============================================================================
-# CONFIG HELPERS
-# ============================================================================
-
-def make_manual_decoder_cfg(spec):
-    return {
-        "model_name": spec["model_name"],
-        "hidden_size": spec["hidden_size"],
-        "intermediate_size": spec["intermediate_size"],
-        "num_attention_heads": spec["num_attention_heads"],
-        "num_key_value_heads": spec["num_key_value_heads"],
-        "max_position_embeddings": spec["max_position_embeddings"],
-        "batch_size": spec.get("batch_size", BATCH_SIZE),
-        "seq_len": spec.get("seq_len", SEQ_LEN),
-    }
+from tvm import tir
+from tvm import meta_schedule as ms
 
 
-def make_encoder_cfg_from_hf(spec):
-    hf_cfg = AutoConfig.from_pretrained(spec["hf_id"])
-    return {
-        "model_name": spec["model_name"],
-        "hidden_size": int(hf_cfg.hidden_size),
-        "intermediate_size": int(hf_cfg.intermediate_size),
-        "num_attention_heads": int(hf_cfg.num_attention_heads),
-        "num_key_value_heads": int(
-            getattr(hf_cfg, "num_key_value_heads", hf_cfg.num_attention_heads)
-        ),
-        "max_position_embeddings": int(
-            getattr(hf_cfg, "max_position_embeddings", 4096)
-        ),
-        "batch_size": spec.get("batch_size", BATCH_SIZE),
-        "seq_len": spec.get("seq_len", SEQ_LEN),
-    }
+# =========================
+# USER SETTINGS
+# =========================
+MODELNAME = "deepseekr1-qwen-14b"
+DB_WORK_DIR = "complete_tuning_logs_20000/tuning_logs_" + MODELNAME
+
+# Pick a small slice first.
+# Example: records you already tested successfully around 3998.
+TEST_RECORDS = [30, 31, 32, 33, 3995, 3996, 3997, 3998]
+
+# Compare these settings against each other.
+MIN_REPEAT_MS_LIST = [3000, 2000, 1500, 1000, 500, 300, 200, 100]
+
+# Keep these fixed while varying min_repeat_ms.
+NUMBER = 1
+REPEAT = 1
+
+# Per-measurement safety timeout.
+TIMEOUT_SECONDS = 90
+
+# Output file
+OUT_CSV = "min_repeat_ms_sweep.csv"
 
 
-def print_cfg(cfg):
-    print(f'Using config for {cfg["model_name"]}')
-    print(f'HIDDEN_SIZE={cfg["hidden_size"]}')
-    print(f'INTERMEDIATE_SIZE={cfg["intermediate_size"]}')
-    print(f'NUM_ATTENTION_HEADS={cfg["num_attention_heads"]}')
-    print(f'NUM_KEY_VALUE_HEADS={cfg["num_key_value_heads"]}')
-    print(f'MAX_POSITION_EMBEDDINGS={cfg["max_position_embeddings"]}')
-    print(f'HEAD_DIM={cfg["hidden_size"] // cfg["num_attention_heads"]}')
-    print(f'BATCH_SIZE={cfg["batch_size"]}')
-    print(f'SEQ_LEN={cfg["seq_len"]}')
+def as_float_metric(x):
+    if hasattr(x, "ratio"):
+        return float(x.ratio)
+    return float(x)
 
 
-# ============================================================================
-# TASK MERGING
-# ============================================================================
+def trace_fingerprint(trace):
+    obj = trace.as_python() if hasattr(trace, "as_python") else repr(trace)
+    if isinstance(obj, str):
+        s = obj
+    else:
+        s = "\n".join(str(x) for x in obj)
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
-def task_structural_key(task):
-    mod_hash = tvm.ir.structural_hash(task.mod)
-    target_key = str(task.target)
-    return (task.task_name, mod_hash, target_key)
+
+def make_nd(shape, dtype, dev):
+    shape = [int(s) for s in shape]
+    dtype = str(dtype)
+
+    if "float" in dtype:
+        x = np.random.rand(*shape).astype(dtype)
+    elif "int" in dtype:
+        info = np.iinfo(np.dtype(dtype))
+        lo = max(info.min, -8)
+        hi = min(info.max, 8)
+        if lo >= hi:
+            lo, hi = 0, 1
+        x = np.random.randint(lo, hi + 1, size=shape, dtype=np.dtype(dtype))
+    elif dtype == "bool":
+        x = np.random.randint(0, 2, size=shape).astype("bool")
+    else:
+        x = np.random.rand(*shape).astype("float32")
+        x = x.astype(dtype)
+
+    return tvm.nd.array(x, device=dev)
 
 
-def merge_extracted_tasks(extracted_tasks):
-    buckets = defaultdict(list)
+def measure_one(abs_idx, db_work_dir, min_repeat_ms, result_queue):
+    try:
+        t0 = time.time()
 
-    for task in extracted_tasks:
-        key = task_structural_key(task)
-        merged = False
+        dev = tvm.cuda(0)
+        db = ms.database.JSONDatabase(work_dir=db_work_dir)
+        all_recs = db.get_all_tuning_records()
+        r = all_recs[abs_idx]
 
-        for existing in buckets[key]:
-            same_mod = tvm.ir.structural_equal(task.mod, existing.mod)
-            same_target = str(task.target) == str(existing.target)
-            same_name = task.task_name == existing.task_name
+        mod = r.workload.mod
+        target = r.target
+        workload_hash = int(tvm.ir.structural_hash(mod))
+        trace_hash = trace_fingerprint(r.trace)
 
-            if same_mod and same_target and same_name:
-                existing.weight += task.weight
-                merged = True
-                break
+        sch = tir.Schedule(mod, debug_mask="all")
+        r.trace.apply_to_schedule(sch, remove_postproc=True)
 
-        if not merged:
-            buckets[key].append(
-                ms.ExtractedTask(
-                    task_name=task.task_name,
-                    mod=task.mod,
-                    target=task.target,
-                    dispatched=task.dispatched,
-                    weight=task.weight,
-                )
+        cand = ms.MeasureCandidate(sch=sch, args_info=r.args_info)
+        ctx = ms.TuneContext(mod=mod, target=target, task_name=f"rec_{abs_idx}")
+
+        extractor = ms.feature_extractor.PerStoreFeature()
+        (feat_nd,) = extractor.extract_from(ctx, candidates=[cand])
+        feat = feat_nd.numpy()
+        n_stores = int(feat.shape[0])
+
+        rt_mod = tvm.build(sch.mod, target=target)
+        args = [make_nd(t.shape, t.dtype, dev) for t in r.args_info]
+
+        ftimer = rt_mod.time_evaluator(
+            "main",
+            dev,
+            number=NUMBER,
+            repeat=REPEAT,
+            min_repeat_ms=min_repeat_ms,
+        )
+
+        t1 = time.time()
+        timing = ftimer(*args)
+        t2 = time.time()
+
+        nvml = tvm.get_global_func("runtime.profiling.get_last_nvml_metrics")()
+        avg_power = as_float_metric(nvml["avg_power_w"])
+
+        result_queue.put(
+            (
+                "ok",
+                {
+                    "record": abs_idx,
+                    "workload_hash": workload_hash,
+                    "trace_hash": trace_hash,
+                    "n_stores": n_stores,
+                    "min_repeat_ms": min_repeat_ms,
+                    "lat_mean_ms": float(timing.mean) * 1e3,
+                    "avg_power_w": float(avg_power),
+                    "setup_plus_build_s": t1 - t0,
+                    "ftimer_call_s": t2 - t1,
+                    "total_worker_s": t2 - t0,
+                },
             )
-
-    merged_tasks = []
-    for group in buckets.values():
-        merged_tasks.extend(group)
-    return merged_tasks
-
-
-def print_task_merge_stats(before_tasks, after_tasks):
-    before_weight = sum(int(task.weight) for task in before_tasks)
-    after_weight = sum(int(task.weight) for task in after_tasks)
-
-    print("\n" + "-" * 80)
-    print("Task aggregation summary")
-    print(f"Unique tasks before merge: {len(before_tasks)}")
-    print(f"Unique tasks after merge:  {len(after_tasks)}")
-    print(f"Total task weight before:  {before_weight}")
-    print(f"Total task weight after:   {after_weight}")
-    print("-" * 80)
-
-    if len(after_tasks) > 0:
-        sorted_tasks = sorted(
-            after_tasks,
-            key=lambda t: int(t.weight),
-            reverse=True,
         )
-        print("Top merged tasks by weight:")
-        for task in sorted_tasks[:20]:
-            print(
-                f"  name={task.task_name:<20} "
-                f"weight={int(task.weight):<4} "
-                f"hash={tvm.ir.structural_hash(task.mod)}"
+
+    except Exception as e:
+        result_queue.put(
+            (
+                "err",
+                {
+                    "record": abs_idx,
+                    "min_repeat_ms": min_repeat_ms,
+                    "error": str(e),
+                },
             )
-        print("-" * 80)
-
-
-# ============================================================================
-# DECODER-STYLE OPERATOR DEFINITIONS
-# ============================================================================
-
-class AttentionQKVProjection(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        head_dim = cfg["hidden_size"] // cfg["num_attention_heads"]
-        total_qkv_dim = (
-            cfg["num_attention_heads"] + 2 * cfg["num_key_value_heads"]
-        ) * head_dim
-        self.qkv_proj = nn.Linear(cfg["hidden_size"], total_qkv_dim, bias=True)
-
-    def forward(self, hidden_states):
-        return self.qkv_proj(hidden_states)
-
-
-class AttentionMatmul(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.head_dim = cfg["hidden_size"] // cfg["num_attention_heads"]
-
-    def forward(self, query, key):
-        batch, num_kv_heads, seq_len, head_dim = key.shape
-        num_query_heads = query.shape[1]
-        repeats = num_query_heads // num_kv_heads
-        key = key.unsqueeze(2).expand(-1, -1, repeats, -1, -1).reshape(
-            batch, num_query_heads, seq_len, head_dim
-        )
-        key_transposed = key.transpose(-2, -1)
-        return torch.matmul(query, key_transposed) / (self.head_dim ** 0.5)
-
-
-class AttentionSoftmax(nn.Module):
-    def forward(self, attention_scores):
-        return F.softmax(attention_scores, dim=-1)
-
-
-class AttentionValueMatmul(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-
-    def forward(self, attention_weights, value):
-        batch, num_kv_heads, seq_len, head_dim = value.shape
-        num_query_heads = attention_weights.shape[1]
-        repeats = num_query_heads // num_kv_heads
-        value = value.unsqueeze(2).expand(-1, -1, repeats, -1, -1).reshape(
-            batch, num_query_heads, seq_len, head_dim
-        )
-        return torch.matmul(attention_weights, value)
-
-
-class AttentionOutputProjection(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.o_proj = nn.Linear(cfg["hidden_size"], cfg["hidden_size"], bias=False)
-
-    def forward(self, hidden_states):
-        return self.o_proj(hidden_states)
-
-
-class MLPGateUpProjection(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.gate_up_proj = nn.Linear(
-            cfg["hidden_size"], 2 * cfg["intermediate_size"], bias=False
         )
 
-    def forward(self, hidden_states):
-        return self.gate_up_proj(hidden_states)
 
-
-class MLPActivation(nn.Module):
-    def forward(self, gate_up_states):
-        gate, up = gate_up_states.chunk(2, dim=-1)
-        return F.silu(gate) * up
-
-
-class MLPDownProjection(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.down_proj = nn.Linear(
-            cfg["intermediate_size"], cfg["hidden_size"], bias=False
-        )
-
-    def forward(self, hidden_states):
-        return self.down_proj(hidden_states)
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(cfg["hidden_size"]))
-        self.variance_epsilon = 1e-6
-
-    def forward(self, hidden_states):
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * hidden_states
-
-
-# ============================================================================
-# ENCODER-STYLE OPERATOR DEFINITIONS
-# ============================================================================
-
-class QProjection(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.q_proj = nn.Linear(cfg["hidden_size"], cfg["hidden_size"], bias=True)
-
-    def forward(self, hidden_states):
-        return self.q_proj(hidden_states)
-
-
-class KProjection(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.k_proj = nn.Linear(cfg["hidden_size"], cfg["hidden_size"], bias=True)
-
-    def forward(self, hidden_states):
-        return self.k_proj(hidden_states)
-
-
-class VProjection(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.v_proj = nn.Linear(cfg["hidden_size"], cfg["hidden_size"], bias=True)
-
-    def forward(self, hidden_states):
-        return self.v_proj(hidden_states)
-
-
-class EncoderAttentionMatmul(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.head_dim = cfg["hidden_size"] // cfg["num_attention_heads"]
-
-    def forward(self, query, key):
-        key_transposed = key.transpose(-2, -1)
-        return torch.matmul(query, key_transposed) / (self.head_dim ** 0.5)
-
-
-class EncoderAttentionValueMatmul(nn.Module):
-    def forward(self, attention_weights, value):
-        return torch.matmul(attention_weights, value)
-
-
-class MLPDenseIn(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.dense_in = nn.Linear(
-            cfg["hidden_size"], cfg["intermediate_size"], bias=True
-        )
-
-    def forward(self, hidden_states):
-        return self.dense_in(hidden_states)
-
-
-class MLPActivationGELU(nn.Module):
-    def forward(self, hidden_states):
-        return F.gelu(hidden_states)
-
-
-class LayerNormOp(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.layer_norm = nn.LayerNorm(cfg["hidden_size"])
-
-    def forward(self, hidden_states):
-        return self.layer_norm(hidden_states)
-
-
-# ============================================================================
-# EXTRACTION HELPERS
-# ============================================================================
-
-def extract_tasks_for_operator(model, input_shapes, operator_name, target):
-    print(f"Tracing and Extracting operator: {operator_name}")
-
-    model = copy.deepcopy(model).cpu().eval()
-
-    with torch.no_grad():
-        traced = torch.fx.symbolic_trace(model)
-
-    input_specs = [(shape, "float32") for shape in input_shapes]
-    mod = from_fx(traced, input_specs, keep_params_as_input=True)
-    mod = relax.transform.LegalizeOps()(mod)
-    mod, _ = relax.frontend.detach_params(mod)
-
-    tasks = ms.relax_integration.extract_tasks(mod, target)
-    return tasks
-
-
-# ============================================================================
-# MANUAL OPERATOR BANKS
-# ============================================================================
-
-def build_decoder_operators(cfg):
-    batch_size = cfg["batch_size"]
-    seq_len = cfg["seq_len"]
-    hidden_size = cfg["hidden_size"]
-    intermediate_size = cfg["intermediate_size"]
-    num_attention_heads = cfg["num_attention_heads"]
-    num_key_value_heads = cfg["num_key_value_heads"]
-    head_dim = hidden_size // num_attention_heads
-
-    return [
-        ("attention_qkv_projection", AttentionQKVProjection(cfg), [(batch_size, seq_len, hidden_size)]),
-        ("attention_matmul", AttentionMatmul(cfg), [
-            (batch_size, num_attention_heads, seq_len, head_dim),
-            (batch_size, num_key_value_heads, seq_len, head_dim),
-        ]),
-        ("attention_softmax", AttentionSoftmax(), [
-            (batch_size, num_attention_heads, seq_len, seq_len)
-        ]),
-        ("attention_value_matmul", AttentionValueMatmul(cfg), [
-            (batch_size, num_attention_heads, seq_len, seq_len),
-            (batch_size, num_key_value_heads, seq_len, head_dim),
-        ]),
-        ("attention_output_projection", AttentionOutputProjection(cfg), [(batch_size, seq_len, hidden_size)]),
-        ("mlp_gate_up_projection", MLPGateUpProjection(cfg), [(batch_size, seq_len, hidden_size)]),
-        ("mlp_activation", MLPActivation(), [(batch_size, seq_len, 2 * intermediate_size)]),
-        ("mlp_down_projection", MLPDownProjection(cfg), [(batch_size, seq_len, intermediate_size)]),
-        ("rms_norm", RMSNorm(cfg), [(batch_size, seq_len, hidden_size)]),
-    ]
-
-
-def build_encoder_operators(cfg):
-    batch_size = cfg["batch_size"]
-    seq_len = cfg["seq_len"]
-    hidden_size = cfg["hidden_size"]
-    intermediate_size = cfg["intermediate_size"]
-    num_attention_heads = cfg["num_attention_heads"]
-    head_dim = hidden_size // num_attention_heads
-
-    return [
-        ("q_projection", QProjection(cfg), [(batch_size, seq_len, hidden_size)]),
-        ("k_projection", KProjection(cfg), [(batch_size, seq_len, hidden_size)]),
-        ("v_projection", VProjection(cfg), [(batch_size, seq_len, hidden_size)]),
-        ("attention_matmul", EncoderAttentionMatmul(cfg), [
-            (batch_size, num_attention_heads, seq_len, head_dim),
-            (batch_size, num_attention_heads, seq_len, head_dim),
-        ]),
-        ("attention_softmax", AttentionSoftmax(), [
-            (batch_size, num_attention_heads, seq_len, seq_len)
-        ]),
-        ("attention_value_matmul", EncoderAttentionValueMatmul(), [
-            (batch_size, num_attention_heads, seq_len, seq_len),
-            (batch_size, num_attention_heads, seq_len, head_dim),
-        ]),
-        ("attention_output_projection", AttentionOutputProjection(cfg), [(batch_size, seq_len, hidden_size)]),
-        ("mlp_dense_in", MLPDenseIn(cfg), [(batch_size, seq_len, hidden_size)]),
-        ("mlp_activation_gelu", MLPActivationGELU(), [(batch_size, seq_len, intermediate_size)]),
-        ("mlp_down_projection", MLPDownProjection(cfg), [(batch_size, seq_len, intermediate_size)]),
-        ("layer_norm", LayerNormOp(cfg), [(batch_size, seq_len, hidden_size)]),
-    ]
-
-
-# ============================================================================
-# CAPTURE-BASED VISION MODEL SUPPORT
-# ============================================================================
-
-def is_leaf_module(module):
-    return len(list(module.children())) == 0
-
-
-def should_capture_module(module):
-    capture_types = (
-        nn.Conv2d,
-        nn.Linear,
-        nn.LayerNorm,
-        nn.GELU,
-        nn.SiLU,
-        nn.ReLU,
-        nn.MaxPool2d,
-        nn.AvgPool2d,
-        nn.AdaptiveAvgPool2d,
+def run_one_with_timeout(ctx, abs_idx, min_repeat_ms):
+    result_queue = ctx.Queue()
+    p = ctx.Process(
+        target=measure_one,
+        args=(abs_idx, DB_WORK_DIR, min_repeat_ms, result_queue),
     )
-    return is_leaf_module(module) and isinstance(module, capture_types)
+    p.start()
+    p.join(TIMEOUT_SECONDS)
 
+    if p.is_alive():
+        p.terminate()
+        p.join()
+        result_queue.close()
+        result_queue.join_thread()
+        return {
+            "record": abs_idx,
+            "min_repeat_ms": min_repeat_ms,
+            "status": "timeout",
+            "workload_hash": "",
+            "trace_hash": "",
+            "n_stores": "",
+            "lat_mean_ms": "",
+            "avg_power_w": "",
+            "setup_plus_build_s": "",
+            "ftimer_call_s": "",
+            "total_worker_s": "",
+            "error": f"timeout after {TIMEOUT_SECONDS}s",
+        }
 
-def get_first_tensor(x):
-    if isinstance(x, torch.Tensor):
-        return x
-    if isinstance(x, (list, tuple)):
-        for item in x:
-            out = get_first_tensor(item)
-            if out is not None:
-                return out
-    if isinstance(x, dict):
-        for _, item in x.items():
-            out = get_first_tensor(item)
-            if out is not None:
-                return out
-    return None
+    try:
+        status, payload = result_queue.get(timeout=5)
+    except queue.Empty:
+        result_queue.close()
+        result_queue.join_thread()
+        return {
+            "record": abs_idx,
+            "min_repeat_ms": min_repeat_ms,
+            "status": "no_result",
+            "workload_hash": "",
+            "trace_hash": "",
+            "n_stores": "",
+            "lat_mean_ms": "",
+            "avg_power_w": "",
+            "setup_plus_build_s": "",
+            "ftimer_call_s": "",
+            "total_worker_s": "",
+            "error": "queue empty",
+        }
 
+    result_queue.close()
+    result_queue.join_thread()
 
-def normalize_tensor_args(args):
-    tensor_args = []
-    for arg in args:
-        if isinstance(arg, torch.Tensor):
-            tensor_args.append(arg.detach().cpu())
-    return tensor_args
+    if status == "ok":
+        payload["status"] = "ok"
+        payload["error"] = ""
+        return payload
 
-
-def build_pixel_inputs(batch_size, image_size):
     return {
-        "pixel_values": torch.randn(
-            batch_size, 3, image_size, image_size, dtype=torch.float32
-        )
+        "record": payload["record"],
+        "min_repeat_ms": payload["min_repeat_ms"],
+        "status": "error",
+        "workload_hash": "",
+        "trace_hash": "",
+        "n_stores": "",
+        "lat_mean_ms": "",
+        "avg_power_w": "",
+        "setup_plus_build_s": "",
+        "ftimer_call_s": "",
+        "total_worker_s": "",
+        "error": payload["error"],
     }
 
 
-def load_captured_model(spec):
-    kind = spec["kind"]
-    hf_id = spec["hf_id"]
-    batch_size = spec.get("batch_size", BATCH_SIZE)
-    image_size = spec.get("image_size", IMAGE_SIZE)
+def summarize(rows):
+    ok_rows = [r for r in rows if r["status"] == "ok"]
+    by_record = {}
+    for r in ok_rows:
+        by_record.setdefault(r["record"], {})[r["min_repeat_ms"]] = r
 
-    if kind == "captured_image_classification":
-        model = AutoModelForImageClassification.from_pretrained(hf_id).cpu().eval()
-        inputs = build_pixel_inputs(batch_size, image_size)
-        return model, inputs
+    baseline_ms = max(MIN_REPEAT_MS_LIST)
+    print("\n=== Relative change vs baseline ===")
+    print(f"Baseline min_repeat_ms = {baseline_ms}")
 
-    if kind == "captured_object_detection":
-        model = AutoModelForObjectDetection.from_pretrained(hf_id).cpu().eval()
-        inputs = build_pixel_inputs(batch_size, image_size)
-        return model, inputs
+    deltas = []
+    for rec in sorted(by_record):
+        if baseline_ms not in by_record[rec]:
+            continue
+        base = by_record[rec][baseline_ms]
+        base_p = base["avg_power_w"]
+        base_l = base["lat_mean_ms"]
 
-    if kind == "captured_semantic_segmentation":
-        model = AutoModelForSemanticSegmentation.from_pretrained(hf_id).cpu().eval()
-        inputs = build_pixel_inputs(batch_size, image_size)
-        return model, inputs
+        for ms_value in MIN_REPEAT_MS_LIST:
+            if ms_value == baseline_ms or ms_value not in by_record[rec]:
+                continue
+            cur = by_record[rec][ms_value]
 
-    if kind == "captured_universal_segmentation":
-        model = AutoModelForUniversalSegmentation.from_pretrained(hf_id).cpu().eval()
-        inputs = build_pixel_inputs(batch_size, image_size)
-        return model, inputs
+            power_delta_pct = 100.0 * (cur["avg_power_w"] - base_p) / base_p if base_p != 0 else np.nan
+            lat_delta_pct = 100.0 * (cur["lat_mean_ms"] - base_l) / base_l if base_l != 0 else np.nan
+            deltas.append((rec, ms_value, power_delta_pct, lat_delta_pct))
 
-    raise ValueError(f"Unsupported captured model kind: {kind}")
-
-
-def capture_leaf_operators(model, example_inputs):
-    captured = []
-    seen = set()
-    hooks = []
-
-    def make_hook(module_name, module_ref):
-        def hook(_module, args, output):
-            if module_name in seen:
-                return
-
-            tensor_args = normalize_tensor_args(args)
-            out = get_first_tensor(output)
-
-            if len(tensor_args) == 0 or out is None:
-                return
-
-            input_shapes = [tuple(int(v) for v in t.shape) for t in tensor_args]
-            captured.append(
-                (module_name, copy.deepcopy(module_ref).cpu().eval(), input_shapes)
+            print(
+                f"record {rec:5d} | {ms_value:4d} ms | "
+                f"power delta = {power_delta_pct:+7.3f}% | "
+                f"lat delta = {lat_delta_pct:+7.3f}%"
             )
-            seen.add(module_name)
 
-        return hook
+    if deltas:
+        print("\n=== Aggregate absolute deltas vs baseline ===")
+        for ms_value in MIN_REPEAT_MS_LIST:
+            if ms_value == baseline_ms:
+                continue
+            sub = [d for d in deltas if d[1] == ms_value]
+            if not sub:
+                continue
+            mean_abs_power = float(np.mean([abs(x[2]) for x in sub]))
+            max_abs_power = float(np.max([abs(x[2]) for x in sub]))
+            mean_abs_lat = float(np.mean([abs(x[3]) for x in sub]))
+            print(
+                f"{ms_value:4d} ms | mean |power delta| = {mean_abs_power:7.3f}% | "
+                f"max |power delta| = {max_abs_power:7.3f}% | "
+                f"mean |lat delta| = {mean_abs_lat:7.3f}%"
+            )
 
-    for name, module in model.named_modules():
-        if should_capture_module(module):
-            hooks.append(module.register_forward_hook(make_hook(name, module)))
-
-    with torch.no_grad():
-        _ = model(**example_inputs)
-
-    for hook in hooks:
-        hook.remove()
-
-    captured.sort(key=lambda x: x[0])
-    return captured
-
-
-# ============================================================================
-# OPERATOR BUILDER
-# ============================================================================
-
-def build_operators_for_model(model_key):
-    spec = MODEL_SPECS[model_key]
-    kind = spec["kind"]
-
-    if kind == "manual_decoder":
-        cfg = make_manual_decoder_cfg(spec)
-        print_cfg(cfg)
-        return build_decoder_operators(cfg), cfg["model_name"]
-
-    if kind == "manual_encoder_from_hf_config":
-        cfg = make_encoder_cfg_from_hf(spec)
-        print_cfg(cfg)
-        return build_encoder_operators(cfg), cfg["model_name"]
-
-    if kind.startswith("captured_"):
-        print(f"Loading captured model: {spec['model_name']} ({spec['hf_id']})")
-        model, example_inputs = load_captured_model(spec)
-        captured_operators = capture_leaf_operators(model, example_inputs)
-        print(f"Captured {len(captured_operators)} leaf operators from {spec['model_name']}")
-        return captured_operators, spec["model_name"]
-
-    raise ValueError(f"Unsupported model kind: {kind}")
-
-
-# ============================================================================
-# ONE MODEL RUN
-# ============================================================================
-
-def run_one_model(model_key):
-    print("\n" + "#" * 100)
-    print(f"MODEL KEY: {model_key}")
-    print("#" * 100)
-
-    operators, model_name = build_operators_for_model(model_key)
-
-    print("Starting Step 1: extraction and global tuning")
-    print(f"Total Global Trial Budget: {TOTAL_TRIALS}")
-
-    dev = tvm.cuda(0)
-    target = tvm.target.Target.from_device(dev)
-
-    all_global_tasks = []
-    skipped_operators = []
-
-    for i, (name, module, shapes) in enumerate(operators, 1):
-        print(f"[{i}/{len(operators)}] {name}")
-        try:
-            extracted_tasks = extract_tasks_for_operator(module, shapes, name, target)
-            all_global_tasks.extend(extracted_tasks)
-        except Exception as e:
-            skipped_operators.append((name, str(e)))
-            print(f"[SKIP] {name} failed during tracing/extraction: {e}")
-
-    print("\n" + "=" * 80)
-    print(f"Extracted {len(all_global_tasks)} raw tasks before merge.")
-    print(f"Skipped operators: {len(skipped_operators)}")
-    print("=" * 80)
-
-    merged_tasks = merge_extracted_tasks(all_global_tasks)
-    print_task_merge_stats(all_global_tasks, merged_tasks)
-
-    if len(merged_tasks) == 0:
-        print("No tunable tasks remained after merging.")
-        return
-
-    if not IS_IN_CI:
-        work_dir = "./tuning_logs_" + model_name
-
-        tasks, task_weights = ms.relax_integration.extracted_tasks_to_tune_contexts(
-            extracted_tasks=merged_tasks,
-            work_dir=work_dir,
-        )
-
-        print("\n" + "=" * 80)
-        print(f"Found {len(tasks)} distinct tuning tasks after merge.")
-        print("Passing control to TVM's Global TaskScheduler...")
-        print("=" * 80)
-
-        ms.tune_tasks(
-            tasks=tasks,
-            task_weights=task_weights,
-            work_dir=work_dir,
-            max_trials_global=TOTAL_TRIALS,
-        )
-
-        print(f"\nTuning completed. Log saved to {work_dir}")
-
-    if skipped_operators:
-        print("\nSkipped operator summary:")
-        for name, err in skipped_operators[:50]:
-            print(f"  {name}: {err}")
-        if len(skipped_operators) > 50:
-            print(f"  ... and {len(skipped_operators) - 50} more")
-
-
-# ============================================================================
-# MAIN
-# ============================================================================
 
 def main():
-    for model_key in SELECTED_MODELS:
-        run_one_model(model_key)
+    ctx = mp.get_context("spawn")
+    rows = []
+
+    print("[INFO] Starting min_repeat_ms sweep")
+    print(f"[INFO] Records: {TEST_RECORDS}")
+    print(f"[INFO] min_repeat_ms values: {MIN_REPEAT_MS_LIST}")
+    print(f"[INFO] Timeout: {TIMEOUT_SECONDS}s")
+
+    for abs_idx in TEST_RECORDS:
+        print(f"\n[INFO] Record {abs_idx}")
+        for min_repeat_ms in MIN_REPEAT_MS_LIST:
+            row = run_one_with_timeout(ctx, abs_idx, min_repeat_ms)
+            rows.append(row)
+
+            if row["status"] == "ok":
+                print(
+                    f"  min_repeat_ms={min_repeat_ms:4d} | "
+                    f"lat={row['lat_mean_ms']:.3f} ms | "
+                    f"power={row['avg_power_w']:.3f} W | "
+                    f"ftimer_call={row['ftimer_call_s']:.3f} s"
+                )
+            else:
+                print(
+                    f"  min_repeat_ms={min_repeat_ms:4d} | "
+                    f"status={row['status']} | {row['error']}"
+                )
+
+    fieldnames = [
+        "record",
+        "min_repeat_ms",
+        "status",
+        "workload_hash",
+        "trace_hash",
+        "n_stores",
+        "lat_mean_ms",
+        "avg_power_w",
+        "setup_plus_build_s",
+        "ftimer_call_s",
+        "total_worker_s",
+        "error",
+    ]
+
+    with open(OUT_CSV, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+    print(f"\n[INFO] Wrote {OUT_CSV}")
+    summarize(rows)
 
 
 if __name__ == "__main__":
