@@ -31,12 +31,12 @@ SEQ_LEN = 512
 IMAGE_SIZE = 224
 
 SELECTED_MODELS = [
-    "rtdetr_r50",
-    "segformer_b2",
-    "convnextv2_tiny",
-    "mask2former_swin_small",
-    "deepseekr1_qwen_14b",
-    "qwen2_5_3b",
+    # "rtdetr_r50",
+    # "segformer_b2",
+    # "convnextv2_tiny",
+    # "mask2former_swin_small",
+    # "exaone4_0_1_2b",
+    # "qwen2_5_3b",
     "llama_3_1_8b",
     "deberta_v3_base",
     "modernbert_base",

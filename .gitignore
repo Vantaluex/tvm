@@ -277,3 +277,7 @@ tvm-site/
 
 # datasets are big
 run5080/completed_datasets/
+
+run5080/complete_tuning_logs_20000/
+
+*.csv
