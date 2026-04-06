@@ -3,6 +3,8 @@ import time
 import queue
 import hashlib
 import multiprocessing as mp
+import threading
+import pynvml
 
 import numpy as np
 import tvm
@@ -51,20 +53,115 @@ def trace_fingerprint(trace):
 # =========================
 N = 20000
 start_N = 0
-MODELNAME = "deepseekr1-qwen-14b"
+MODELNAME = "segformer-b2"
 FREQ = "2295"
 
-MIN_REPEAT_MS = 1500
-NUMBER = 1
-REPEAT = 1
+WARMUP_SECONDS = 1.2
+MEASURE_SECONDS = 0.3  
+NVML_SAMPLE_MS = 20
 
-PER_RECORD_TIMEOUT_SECONDS = 60
-CHUNK_SIZE = 32
+PER_RECORD_TIMEOUT_SECONDS = 30
+CHUNK_SIZE = 64
 CHUNK_TIMEOUT_SECONDS = 600
 
 DB_WORK_DIR = "complete_tuning_logs_20000/tuning_logs_" + MODELNAME
 OUT_PATH = "dataset_" + MODELNAME + "@" + FREQ + "x" + str(start_N) + "~20000.csv"
 SKIPPED_PATH = "skipped_" + MODELNAME + "@" + FREQ + "x" + str(start_N) + "~20000.txt"
+
+def poll_nvml_power(stop_event, samples, gpu_index, t0):
+    handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
+    interval_s = NVML_SAMPLE_MS / 1000.0
+
+    while not stop_event.is_set():
+        now = time.perf_counter() - t0
+        power_w = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+        samples.append((now, power_w))
+        time.sleep(interval_s)
+
+
+
+def avg_power_over_window(samples, start_s, end_s):
+    if end_s <= start_s:
+        raise ValueError(f"Invalid window: {start_s} -> {end_s}")
+    if not samples:
+        return float("nan")
+
+    samples = sorted(samples, key=lambda x: x[0])
+
+    current_p = samples[0][1]
+    for t, p in samples:
+        if t <= start_s:
+            current_p = p
+        else:
+            break
+
+    energy = 0.0
+    prev_t = start_s
+
+    for t, p in samples:
+        if t <= start_s:
+            continue
+
+        seg_end = min(t, end_s)
+        if seg_end > prev_t:
+            energy += current_p * (seg_end - prev_t)
+            prev_t = seg_end
+
+        if t >= end_s:
+            break
+
+        current_p = p
+
+    if prev_t < end_s:
+        energy += current_p * (end_s - prev_t)
+
+    return energy / (end_s - start_s)
+
+
+def run_manual_power_measurement(rt_mod, args, dev):
+    f = rt_mod["main"]
+
+    warmup_start = time.perf_counter()
+    while time.perf_counter() - warmup_start < WARMUP_SECONDS:
+        f(*args)
+        dev.sync()
+
+    pynvml.nvmlInit()
+    samples = []
+    measured_lat_ms = []
+
+    stop_event = threading.Event()
+    measure_start = time.perf_counter()
+    poller = threading.Thread(
+        target=poll_nvml_power,
+        args=(stop_event, samples, 0, measure_start),
+        daemon=True,
+    )
+    poller.start()
+
+    try:
+        while time.perf_counter() - measure_start < MEASURE_SECONDS:
+            t1 = time.perf_counter()
+            f(*args)
+            dev.sync()
+            t2 = time.perf_counter()
+            measured_lat_ms.append((t2 - t1) * 1e3)
+    finally:
+        stop_event.set()
+        poller.join()
+        pynvml.nvmlShutdown()
+
+    elapsed = time.perf_counter() - measure_start
+    if samples:
+        last_t, last_p = samples[-1]
+        if last_t < elapsed:
+            samples.append((elapsed, last_p))
+
+    avg_power = avg_power_over_window(samples, 0.0, MEASURE_SECONDS)
+    lat_mean_ms = float(np.mean(measured_lat_ms)) if measured_lat_ms else float("nan")
+    return lat_mean_ms, avg_power
+
+
 
 
 def run_record(abs_idx, r):
@@ -75,7 +172,7 @@ def run_record(abs_idx, r):
     workload_hash = int(tvm.ir.structural_hash(mod))
     trace_hash = trace_fingerprint(r.trace)
 
-    sch = tir.Schedule(mod, debug_mask="all")
+    sch = tir.Schedule(mod)
     r.trace.apply_to_schedule(sch, remove_postproc=True)
 
     cand = ms.MeasureCandidate(sch=sch, args_info=r.args_info)
@@ -90,24 +187,14 @@ def run_record(abs_idx, r):
     rt_mod = tvm.build(sch.mod, target=target)
     args = [make_nd(t.shape, t.dtype, dev) for t in r.args_info]
 
-    ftimer = rt_mod.time_evaluator(
-        "main",
-        dev,
-        number=NUMBER,
-        repeat=REPEAT,
-        min_repeat_ms=MIN_REPEAT_MS,
-    )
-    timing = ftimer(*args)
-
-    nvml = tvm.get_global_func("runtime.profiling.get_last_nvml_metrics")()
-    avg_power = as_float_metric(nvml["avg_power_w"])
+    lat_mean_ms, avg_power = run_manual_power_measurement(rt_mod, args, dev)
 
     row = [
         abs_idx,
         workload_hash,
         trace_hash,
         int(feat.shape[0]),
-        float(timing.mean) * 1e3,
+        float(lat_mean_ms),
         float(avg_power),
     ]
     row += [float(x) for x in agg.tolist()]
@@ -117,7 +204,7 @@ def run_record(abs_idx, r):
         abs_idx,
         row,
         workload_hash,
-        float(timing.mean) * 1e3,
+        float(lat_mean_ms),
         float(avg_power),
     )
 
@@ -159,7 +246,6 @@ def handle_result(result, writer, out_file, skipped_records, actual_N, finished_
     if tag == "ok":
         _, abs_idx, row, workload_hash, lat_ms, avg_power = result
         writer.writerow(row)
-        out_file.flush()
         finished_set.add(abs_idx)
         print(f"[{abs_idx} / {actual_N}] Hash: {workload_hash} | Lat: {lat_ms:.3f}ms | Pwr: {avg_power:.1f}W")
         return
@@ -283,7 +369,8 @@ def main():
 
     print(f"[INFO] Loaded {len(recs)} tuning records from database.")
     print(f"[INFO] Chunk size: {CHUNK_SIZE}")
-    print(f"[INFO] min_repeat_ms: {MIN_REPEAT_MS}")
+    print(f"[INFO] warmup_s: {WARMUP_SECONDS}")
+    print(f"[INFO] measure_s: {MEASURE_SECONDS}")
 
     ctx = mp.get_context("spawn")
     skipped_records = []
@@ -298,6 +385,7 @@ def main():
         for chunk_id, chunk in enumerate(chunks):
             print(f"[INFO] Starting chunk {chunk_id + 1}/{len(chunks)}: {chunk}")
             run_chunk_with_resume(ctx, chunk, w, f, skipped_records, actual_N)
+            f.flush()
 
     with open(SKIPPED_PATH, "w") as sf:
         for idx, reason in skipped_records:
@@ -314,6 +402,8 @@ def main():
             print(f"  ... and {len(skipped_records) - 50} more")
     else:
         print("  None")
+
+
 
 
 if __name__ == "__main__":

@@ -1,0 +1,111 @@
+19989	error: Traceback (most recent call last):
+  1: tvm::runtime::detail::PackFuncVoidAddr_<4, tvm::runtime::CUDAWrappedFunc>(tvm::runtime::CUDAWrappedFunc, std::vector<tvm::runtime::detail::ArgConvertCode, std::allocator<tvm::runtime::detail::ArgConvertCode> > const&)::{lambda(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)#1}::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*) const
+        at /home/vantaluex/tvm19/src/runtime/cuda/../pack_args.h:185
+  0: tvm::runtime::CUDAWrappedFunc::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*, void**) const
+        at /home/vantaluex/tvm19/src/runtime/cuda/cuda_module.cc:206
+  File "/home/vantaluex/tvm19/src/runtime/cuda/cuda_module.cc", line 206
+TVMError: CUDALaunch Error: CUDA_ERROR_OUT_OF_MEMORY
+ grid=(2,1,1),  block=(32,1,1)
+// func_name=main_kernel
+// CUDA Source
+// -----------
+
+#if (((__CUDACC_VER_MAJOR__ == 11) && (__CUDACC_VER_MINOR__ >= 4)) || \
+     (__CUDACC_VER_MAJOR__ > 11))
+#define TVM_ENABLE_L2_PREFETCH 1
+#else
+#define TVM_ENABLE_L2_PREFETCH 0
+#endif
+
+#ifdef _WIN32
+  using uint = unsigned int;
+  using uchar = unsigned char;
+  using ushort = unsigned short;
+  using int64_t = long long;
+  using uint64_t = unsigned long long;
+#else
+  #define uint unsigned int
+  #define uchar unsigned char
+  #define ushort unsigned short
+  #define int64_t long long
+  #define uint64_t unsigned long long
+#endif
+extern "C" __global__ void __launch_bounds__(32) main_kernel(float* __restrict__ inp_0, float* __restrict__ lv, float* __restrict__ matmul);
+extern "C" __global__ void __launch_bounds__(32) main_kernel(float* __restrict__ inp_0, float* __restrict__ lv, float* __restrict__ matmul) {
+  __shared__ float inp_0_shared[6144];
+  __shared__ float lv_shared[4608];
+  float matmul_local[98304];
+  for (int ax0_ax1_ax2_fused = 0; ax0_ax1_ax2_fused < 2048; ++ax0_ax1_ax2_fused) {
+    inp_0_shared[ax0_ax1_ax2_fused] = inp_0[(ax0_ax1_ax2_fused * 768)];
+  }
+  for (int ax0_ax1_fused = 0; ax0_ax1_fused < 1536; ++ax0_ax1_fused) {
+    lv_shared[ax0_ax1_fused] = lv[((((int)blockIdx.x) * 1536) + ax0_ax1_fused)];
+  }
+__asm__ __volatile__("cp.async.commit_group;");
+
+  for (int ax0_ax1_ax2_fused_1 = 0; ax0_ax1_ax2_fused_1 < 2048; ++ax0_ax1_ax2_fused_1) {
+    inp_0_shared[(ax0_ax1_ax2_fused_1 + 2048)] = inp_0[((ax0_ax1_ax2_fused_1 * 768) + 1)];
+  }
+  for (int ax0_ax1_fused_1 = 0; ax0_ax1_fused_1 < 1536; ++ax0_ax1_fused_1) {
+    lv_shared[(ax0_ax1_fused_1 + 1536)] = lv[(((((int)blockIdx.x) * 1536) + ax0_ax1_fused_1) + 3072)];
+  }
+__asm__ __volatile__("cp.async.commit_group;");
+
+  for (int k_0_fused = 0; k_0_fused < 766; ++k_0_fused) {
+    __syncthreads();
+    for (int ax0_ax1_ax2_fused_2 = 0; ax0_ax1_ax2_fused_2 < 2048; ++ax0_ax1_ax2_fused_2) {
+      inp_0_shared[((((k_0_fused + 2) % 3) * 2048) + ax0_ax1_ax2_fused_2)] = inp_0[(((ax0_ax1_ax2_fused_2 * 768) + k_0_fused) + 2)];
+    }
+    for (int ax0_ax1_fused_2 = 0; ax0_ax1_fused_2 < 1536; ++ax0_ax1_fused_2) {
+      lv_shared[((((k_0_fused + 2) % 3) * 1536) + ax0_ax1_fused_2)] = lv[((((k_0_fused * 3072) + (((int)blockIdx.x) * 1536)) + ax0_ax1_fused_2) + 6144)];
+    }
+__asm__ __volatile__("cp.async.commit_group;");
+
+__asm__ __volatile__("cp.async.wait_group 2;");
+
+    __syncthreads();
+    for (int i1_3 = 0; i1_3 < 8; ++i1_3) {
+      for (int i2_3 = 0; i2_3 < 12; ++i2_3) {
+        for (int i1_4 = 0; i1_4 < 32; ++i1_4) {
+          for (int i2_4 = 0; i2_4 < 32; ++i2_4) {
+            if (k_0_fused == 0) {
+              matmul_local[((((i1_3 * 12288) + (i1_4 * 384)) + (i2_3 * 32)) + i2_4)] = 0.000000e+00f;
+            }
+            matmul_local[((((i1_3 * 12288) + (i1_4 * 384)) + (i2_3 * 32)) + i2_4)] = (matmul_local[((((i1_3 * 12288) + (i1_4 * 384)) + (i2_3 * 32)) + i2_4)] + (inp_0_shared[(((((k_0_fused % 3) * 2048) + ((((int)threadIdx.x) >> 2) * 256)) + (i1_3 * 32)) + i1_4)] * lv_shared[(((((k_0_fused % 3) * 1536) + ((((int)threadIdx.x) & 3) * 384)) + (i2_3 * 32)) + i2_4)]));
+          }
+        }
+      }
+    }
+  }
+__asm__ __volatile__("cp.async.wait_group 1;");
+
+  __syncthreads();
+  for (int i1_3_1 = 0; i1_3_1 < 8; ++i1_3_1) {
+    for (int i2_3_1 = 0; i2_3_1 < 12; ++i2_3_1) {
+      for (int i1_4_1 = 0; i1_4_1 < 32; ++i1_4_1) {
+        for (int i2_4_1 = 0; i2_4_1 < 32; ++i2_4_1) {
+          matmul_local[((((i1_3_1 * 12288) + (i1_4_1 * 384)) + (i2_3_1 * 32)) + i2_4_1)] = (matmul_local[((((i1_3_1 * 12288) + (i1_4_1 * 384)) + (i2_3_1 * 32)) + i2_4_1)] + (inp_0_shared[(((((((int)threadIdx.x) >> 2) * 256) + (i1_3_1 * 32)) + i1_4_1) + 2048)] * lv_shared[(((((((int)threadIdx.x) & 3) * 384) + (i2_3_1 * 32)) + i2_4_1) + 1536)]));
+        }
+      }
+    }
+  }
+__asm__ __volatile__("cp.async.wait_group 0;");
+
+  __syncthreads();
+  for (int i1_3_2 = 0; i1_3_2 < 8; ++i1_3_2) {
+    for (int i2_3_2 = 0; i2_3_2 < 12; ++i2_3_2) {
+      for (int i1_4_2 = 0; i1_4_2 < 32; ++i1_4_2) {
+        for (int i2_4_2 = 0; i2_4_2 < 32; ++i2_4_2) {
+          matmul_local[((((i1_3_2 * 12288) + (i1_4_2 * 384)) + (i2_3_2 * 32)) + i2_4_2)] = (matmul_local[((((i1_3_2 * 12288) + (i1_4_2 * 384)) + (i2_3_2 * 32)) + i2_4_2)] + (inp_0_shared[(((((((int)threadIdx.x) >> 2) * 256) + (i1_3_2 * 32)) + i1_4_2) + 4096)] * lv_shared[(((((((int)threadIdx.x) & 3) * 384) + (i2_3_2 * 32)) + i2_4_2) + 3072)]));
+        }
+      }
+    }
+  }
+  for (int ax1 = 0; ax1 < 256; ++ax1) {
+    for (int ax2 = 0; ax2 < 384; ++ax2) {
+      matmul[((((((((int)threadIdx.x) >> 2) * 786432) + (ax1 * 3072)) + (((int)blockIdx.x) * 1536)) + ((((int)threadIdx.x) & 3) * 384)) + ax2)] = matmul_local[((ax1 * 384) + ax2)];
+    }
+  }
+}
+
+
