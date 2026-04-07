@@ -53,8 +53,8 @@ def trace_fingerprint(trace):
 # =========================
 N = 20000
 start_N = 0
-MODELNAME = "segformer-b2"
-FREQ = "2295"
+MODELNAME = "convnextv2-tiny"
+FREQ = "2617"
 
 WARMUP_SECONDS = 1.2
 MEASURE_SECONDS = 0.3  
