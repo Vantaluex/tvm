@@ -43,6 +43,32 @@ VERSION, TUNING_POLICY = parse_cli()
 # ============================================================
 # Global config
 # ============================================================
+RUN_ONLY_FAMILY_FREQUENCY_SUITE = True
+
+FAMILY_FREQ_EXPERIMENTS = [
+    # {
+    #     "tag": "2295_only",
+    #     "allowed_freq_tags": {"2295x0"},
+    #     "use_freq_feature": False,
+    # },
+    # {
+    #     "tag": "2617_only",
+    #     "allowed_freq_tags": {"2617x0"},
+    #     "use_freq_feature": False,
+    # },
+    {
+        "tag": "pooled_2295_2617_freq",
+        "allowed_freq_tags": {"2295x0", "2617x0"},
+        "use_freq_feature": True,
+    },
+]
+
+FREQ_TAG_COL = "freq_tag"
+FREQ_MHZ_COL = "freq_mhz"
+
+RAW_FEATURE_COLS = [f"f{k}" for k in range(656)]
+FEATURE_COLS = RAW_FEATURE_COLS + [FREQ_MHZ_COL]
+EXPECTED_RAW_FEATURE_COUNT = 656
 
 DATASET_DIR = Path("completed_datasets")
 EXCLUDE_PREFIX = "old_"
@@ -56,20 +82,6 @@ GROUP_ID_COL = "group_id"
 DOMAIN_COL = "training_domain"
 TASK_FAMILY_COL = "task_family"
 
-FEATURE_COLS = [f"f{k}" for k in range(656)]
-EXPECTED_FEATURE_COUNT = 656
-
-HARDWARE_CANDIDATE_COLS = [
-    "hardware",
-    "hardware_type",
-    "device",
-    "device_type",
-    "platform",
-    "target",
-    "target_hw",
-    "target_hardware",
-]
-
 RANDOM_STATE = 42
 TREE_METHOD = "hist"
 
@@ -77,11 +89,11 @@ PAPER_TARGET_QUANTILE_BINS = 10
 TEST_SIZE = 0.10
 VAL_SIZE_FROM_TEMP = 1 / 9
 
-MAX_ESTIMATORS = 3000
-EARLY_STOPPING_ROUNDS = 100
+MAX_ESTIMATORS = 1200
+EARLY_STOPPING_ROUNDS = 40
 VERBOSE_EVAL = 200
 
-MAX_GLOBAL_SEARCH_TRIALS = 32
+MAX_GLOBAL_SEARCH_TRIALS = 8
 LOCAL_DEPTH_NEIGHBORHOOD = [-1, 0, 1]
 MIN_ROWS_PER_MODEL_DOMAIN_BASELINE = 50
 
@@ -150,13 +162,27 @@ MODEL_TO_FAMILY = {
 # Version config
 # ============================================================
 
-def parse_model_name_from_path(path):
+def parse_dataset_identity(path):
     stem = Path(path).stem
     if stem.startswith("dataset_"):
         stem = stem[len("dataset_"):]
-    if "@" in stem:
-        stem = stem.split("@", 1)[0]
-    return stem
+
+    left, right = stem.split("@", 1)
+    freq_tag = right.split("~", 1)[0]
+
+    try:
+        freq_mhz = int(freq_tag.split("x", 1)[0])
+    except Exception as e:
+        raise ValueError(f"Could not parse frequency from filename: {path}") from e
+
+    return {
+        "dataset_key": f"{left}@{freq_tag}",
+        "model_name": left,
+        "freq_tag": freq_tag,
+        "freq_mhz": freq_mhz,
+        "csv_path": str(path),
+    }
+
 
 
 def discover_csv_files(dataset_dir=DATASET_DIR, exclude_prefix=EXCLUDE_PREFIX):
@@ -174,37 +200,42 @@ def discover_csv_files(dataset_dir=DATASET_DIR, exclude_prefix=EXCLUDE_PREFIX):
             f"No CSV files found in {dataset_dir} after excluding '{exclude_prefix}*'"
         )
 
-    csv_files = {}
-    duplicates = {}
+    dataset_specs = [parse_dataset_identity(p) for p in candidates]
 
-    for p in candidates:
-        model_name = parse_model_name_from_path(p)
-        if model_name in csv_files:
-            duplicates.setdefault(model_name, [csv_files[model_name]])
-            duplicates[model_name].append(str(p))
-        else:
-            csv_files[model_name] = str(p)
+    seen_keys = set()
+    for spec in dataset_specs:
+        if spec["dataset_key"] in seen_keys:
+            raise ValueError(f"Duplicate dataset key found: {spec['dataset_key']}")
+        seen_keys.add(spec["dataset_key"])
 
-    if duplicates:
-        lines = ["Duplicate model names discovered from filenames:"]
-        for model_name, paths in sorted(duplicates.items()):
-            lines.append(f"  - {model_name}")
-            for path in paths:
-                lines.append(f"      {path}")
-        lines.append("Rename or remove duplicates so each parsed model name maps to exactly one CSV.")
-        raise ValueError("\n".join(lines))
+    return dataset_specs
 
-    return csv_files
+def keep_only_models_with_required_freqs(dataset_specs, required_freqs=(2295, 2617)):
+    required_freqs = set(required_freqs)
 
+    by_model = {}
+    for spec in dataset_specs:
+        by_model.setdefault(spec["model_name"], []).append(spec)
+
+    kept = []
+    for model_name, specs in sorted(by_model.items()):
+        freqs = {int(s["freq_mhz"]) for s in specs}
+        if required_freqs.issubset(freqs):
+            kept.extend(specs)
+
+    return kept
 
 def build_version_config(version):
-    csv_files = discover_csv_files()
+    dataset_specs = discover_csv_files()
+    dataset_specs = keep_only_models_with_required_freqs(
+        dataset_specs, required_freqs=(2295, 2617)
+    )
 
     if version == "A":
         return {
             "version": "A",
             "out_dir": Path("trained_models_A_rewrite_v3"),
-            "csv_files": csv_files,
+            "dataset_specs": dataset_specs,
             "internal_split_mode": "row",
             "split_desc": "row-level stratified split",
         }
@@ -212,10 +243,11 @@ def build_version_config(version):
     return {
         "version": "B",
         "out_dir": Path("trained_models_B_rewrite_v3"),
-        "csv_files": csv_files,
+        "dataset_specs": dataset_specs,
         "internal_split_mode": "grouped",
         "split_desc": "grouped split on model_name::workload_hash",
     }
+
 
 
 CFG = build_version_config(VERSION)
@@ -237,26 +269,29 @@ class DualLogger:
     def __init__(self, path):
         self.path = Path(path)
         self.fp = open(self.path, "w", encoding="utf-8")
+        self._line_count = 0
 
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, exctype, exc, tb):
         self.close()
 
-    def log(self, msg=""):
+    def log(self, msg):
         line = str(msg) + "\n"
         print(msg)
         try:
             self.fp.write(line)
-            self.fp.flush()
+            self._line_count += 1
+            if self._line_count % 50 == 0:
+                self.fp.flush()
         except OSError as e:
             print(f"[LOGGER ERROR] Failed to write to log file: {e}")
 
     def close(self):
         if not self.fp.closed:
+            self.fp.flush()
             self.fp.close()
-
 
 # ============================================================
 # Helpers
@@ -352,13 +387,6 @@ def rmse_array(y_true, y_pred):
     return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
 
 
-def detect_hardware_col(df):
-    for col in HARDWARE_CANDIDATE_COLS:
-        if col in df.columns:
-            return col
-    return None
-
-
 def is_valid_stratify_labels(labels):
     if labels is None:
         return False
@@ -395,30 +423,30 @@ def make_power_bins(values, max_bins=10, logger=None, context="split"):
 
 
 def validate_schema(df, model_name):
-    required = ["i", WORKLOAD_HASH_COL, TRACE_HASH_COL, "n_stores", LAT_COL, TARGET_COL] + FEATURE_COLS
+    required = ["i", WORKLOAD_HASH_COL, TRACE_HASH_COL, "n_stores", LAT_COL, TARGET_COL] + RAW_FEATURE_COLS
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"[{model_name}] Missing columns: {missing[:20]}")
-    if len(FEATURE_COLS) != EXPECTED_FEATURE_COUNT:
-        raise ValueError(f"Expected {EXPECTED_FEATURE_COUNT} feature columns, got {len(FEATURE_COLS)}")
+    if len(RAW_FEATURE_COLS) != EXPECTED_RAW_FEATURE_COUNT:
+        raise ValueError(f"Expected {EXPECTED_RAW_FEATURE_COUNT} feature columns, got {len(RAW_FEATURE_COLS)}")
 
 
 def check_feature_aggregation_signature(df, logger, context):
-    feat_df = df[FEATURE_COLS]
+    feat_df = df[RAW_FEATURE_COLS]
 
     n_zero_cols = int((feat_df == 0).all(axis=0).sum())
     n_negative_cols = int((feat_df < 0).any(axis=0).sum())
     n_constant_cols = int((feat_df.nunique(dropna=False) <= 1).sum())
     n_nan_cols = int(feat_df.isna().any(axis=0).sum())
 
-    logger.log(f"[FEATURE CHECK] {context}: total feature columns = {len(FEATURE_COLS)}")
+    logger.log(f"[FEATURE CHECK] {context}: total feature columns = {len(RAW_FEATURE_COLS)}")
     logger.log(f"[FEATURE CHECK] {context}: all-zero columns      = {n_zero_cols}")
     logger.log(f"[FEATURE CHECK] {context}: columns w/ negatives  = {n_negative_cols}")
     logger.log(f"[FEATURE CHECK] {context}: constant columns      = {n_constant_cols}")
     logger.log(f"[FEATURE CHECK] {context}: columns w/ NaNs       = {n_nan_cols}")
 
-    if len(FEATURE_COLS) % 4 == 0:
-        logger.log(f"[FEATURE CHECK] {context}: feature count divisible by 4 = yes ({len(FEATURE_COLS) // 4} quartets)")
+    if len(RAW_FEATURE_COLS) % 4 == 0:
+        logger.log(f"[FEATURE CHECK] {context}: feature count divisible by 4 = yes ({len(RAW_FEATURE_COLS) // 4} quartets)")
     else:
         logger.log(f"[FEATURE CHECK] {context}: feature count divisible by 4 = no")
 
@@ -433,9 +461,14 @@ def check_feature_aggregation_signature(df, logger, context):
         logger.log(f"[WARN] {context}: many constant feature columns; discriminative signal may be weak")
 
 
-def load_one_dataset(model_name, csv_path, logger=None):
+def load_one_dataset(spec, logger=None):
+    model_name = spec["model_name"]
+    csv_path = spec["csv_path"]
+    freq_tag = spec["freq_tag"]
+    freq_mhz = spec["freq_mhz"]
+
     if logger is not None:
-        logger.log(f"[INFO] Loading {model_name} from: {csv_path}")
+        logger.log(f"[INFO] Loading {model_name} @ {freq_tag} from: {csv_path}")
 
     df = pd.read_csv(csv_path)
     validate_schema(df, model_name)
@@ -443,69 +476,135 @@ def load_one_dataset(model_name, csv_path, logger=None):
     df = df.replace([np.inf, -np.inf], np.nan)
     before = len(df)
     df = df.dropna(
-        subset=FEATURE_COLS + [TARGET_COL, LAT_COL, WORKLOAD_HASH_COL, TRACE_HASH_COL]
+        subset=RAW_FEATURE_COLS + [TARGET_COL, LAT_COL, WORKLOAD_HASH_COL, TRACE_HASH_COL]
     ).copy()
     after = len(df)
 
     if after == 0:
-        raise ValueError(f"[{model_name}] No valid rows remain after cleaning")
+        raise ValueError(f"[{model_name} @ {freq_tag}] No valid rows remain after cleaning")
 
     df[MODEL_COL] = model_name
+    df[FREQ_TAG_COL] = freq_tag
+    df[FREQ_MHZ_COL] = np.float32(freq_mhz)
+
     df[GROUP_ID_COL] = df[MODEL_COL].astype(str) + "::" + df[WORKLOAD_HASH_COL].astype(str)
 
-    hw_col = detect_hardware_col(df)
-    if hw_col is not None:
-        df[DOMAIN_COL] = df[hw_col].astype(str)
-    else:
-        df[DOMAIN_COL] = "pooled_no_hardware_col"
+    
+    df[DOMAIN_COL] = "pooled"
 
     df[TASK_FAMILY_COL] = assign_task_family(model_name)
 
     if logger is not None:
         logger.log(f"[INFO] {model_name}: rows before cleaning = {before}")
         logger.log(f"[INFO] {model_name}: rows after cleaning  = {after}")
+        logger.log(f"[INFO] {model_name}: frequency tag        = {freq_tag}")
+        logger.log(f"[INFO] {model_name}: frequency mhz        = {freq_mhz}")
         logger.log(f"[INFO] {model_name}: task family          = {df[TASK_FAMILY_COL].iloc[0]}")
-        logger.log(f"[INFO] {model_name}: domain source        = {hw_col if hw_col else 'MISSING'}")
-        logger.log(f"[INFO] {model_name}: distinct domains     = {sorted(df[DOMAIN_COL].unique().tolist())}")
-        check_feature_aggregation_signature(df, logger, context=model_name)
+        logger.log(f"[INFO] {model_name}: domain               = pooled")
+        check_feature_aggregation_signature(df, logger, context=f"{model_name}@{freq_tag}")
 
     return df
 
 
-def load_all_datasets(csv_files, logger=None):
+
+def load_all_datasets(dataset_specs, logger=None):
     frames = []
-    for model_name, csv_path in csv_files.items():
-        frames.append(load_one_dataset(model_name, csv_path, logger))
+    for spec in dataset_specs:
+        frames.append(load_one_dataset(spec, logger))
 
     full_df = pd.concat(frames, axis=0, ignore_index=True)
 
     if logger is not None:
         logger.log(f"[INFO] Total pooled rows: {len(full_df)}")
         logger.log(f"[INFO] Models: {sorted(full_df[MODEL_COL].unique().tolist())}")
+        logger.log(f"[INFO] Frequencies: {sorted(full_df[FREQ_TAG_COL].unique().tolist())}")
         logger.log(f"[INFO] Families: {sorted(full_df[TASK_FAMILY_COL].unique().tolist())}")
         logger.log(f"[INFO] Domains: {sorted(full_df[DOMAIN_COL].unique().tolist())}")
-        if full_df[DOMAIN_COL].nunique() == 1 and full_df[DOMAIN_COL].iloc[0] == "pooled_no_hardware_col":
-            logger.log("[WARN] No hardware column detected. This prevents Eyas-style per-hardware training.")
 
     return full_df
 
-def validate_family_inventory(df, logger):
-    counts = (
-        df.groupby(TASK_FAMILY_COL)[MODEL_COL]
-        .nunique()
-        .sort_values()
-    )
 
-    logger.log("[INFO] Model counts per family:")
-    for family, n in counts.items():
-        logger.log(f"  - {family}: {n}")
+def set_feature_mode(use_freq_feature):
+    global FEATURE_COLS
+    FEATURE_COLS = RAW_FEATURE_COLS + ([FREQ_MHZ_COL] if use_freq_feature else [])
 
-    too_small = counts[counts < 2]
-    if len(too_small):
-        raise ValueError(
-            "Each family needs at least 2 models for unseen-model train/test splitting. "
-            f"Too small: {too_small.to_dict()}"
-        )
+
+def set_run_dirs(out_dir):
+    global OUTDIR, LOGDIR, METADIR
+    OUTDIR = Path(out_dir)
+    LOGDIR = OUTDIR / "logs"
+    METADIR = OUTDIR / "meta"
+    OUTDIR.mkdir(parents=True, exist_ok=True)
+    LOGDIR.mkdir(exist_ok=True)
+    METADIR.mkdir(exist_ok=True)
+
+
+def filter_dataset_specs_by_freq(dataset_specs, allowed_freq_tags):
+    chosen = [spec for spec in dataset_specs if spec["freq_tag"] in allowed_freq_tags]
+    if not chosen:
+        raise ValueError(f"No dataset files matched frequencies: {sorted(allowed_freq_tags)}")
+    return chosen
+
+
+def pick_col(df, *names):
+    for name in names:
+        if name in df.columns:
+            return name
+    return None
+
+
+
+def run_family_frequency_suite(dataset_specs):
+    suite_root = Path(f"trained_models_{VERSION}_family_frequency_suite")
+    suite_rows = []
+
+    for exp in FAMILY_FREQ_EXPERIMENTS:
+        exp_specs = filter_dataset_specs_by_freq(dataset_specs, exp["allowed_freq_tags"])
+        set_feature_mode(exp["use_freq_feature"])
+        set_run_dirs(suite_root / exp["tag"])
+
+        with DualLogger(LOGDIR / "bootstrap.log") as logger:
+            logger.log("=" * 60)
+            logger.log(f"[INFO] Family frequency suite experiment: {exp['tag']}")
+            logger.log(f"[INFO] Allowed frequencies: {sorted(exp['allowed_freq_tags'])}")
+            logger.log(f"[INFO] Frequency feature enabled: {exp['use_freq_feature']}")
+            logger.log(f"[INFO] Active feature count: {len(FEATURE_COLS)}")
+            logger.log(f"[INFO] Dataset files in this run: {len(exp_specs)}")
+            for spec in exp_specs:
+                logger.log(
+                    f"  - {spec['model_name']} @ {spec['freq_tag']} "
+                    f"({spec['freq_mhz']} MHz): {spec['csv_path']}"
+                )
+
+            full_df = load_all_datasets(exp_specs, logger)
+            family_summary, family_tuning_summary = run_family_generalization_experiment(full_df)
+            best_val_col = pick_col(family_summary, "bestvalmapepct", "best_val_mape_pct")
+            val_col = pick_col(family_summary, "valmapepct", "val_mape_pct")
+            test_col = pick_col(family_summary, "testmapepct", "test_mape_pct")
+            train_col = pick_col(family_summary, "trainmapepct", "train_mape_pct")
+
+            suite_rows.append({
+                "experiment": exp["tag"],
+                "allowedfreqtags": ",".join(sorted(exp["allowed_freq_tags"])),
+                "usefreqfeature": exp["use_freq_feature"],
+                "nfeaturecols": len(FEATURE_COLS),
+                "ndatasetfiles": len(exp_specs),
+                "nmodels": int(full_df[MODEL_COL].nunique()),
+                "nrows": int(len(full_df)),
+                "avgbestvalmapepct": float(family_summary[best_val_col].dropna().mean()) if best_val_col else np.nan,
+                "avgvalmapepct": float(family_summary[val_col].dropna().mean()) if val_col else np.nan,
+                "avgtestmapepct": float(family_summary[test_col].dropna().mean()) if test_col else np.nan,
+                "avgtrainmapepct": float(family_summary[train_col].dropna().mean()) if train_col else np.nan,
+                "avgtrainrows": float(family_summary["trainrows"].dropna().mean()) if "trainrows" in family_summary.columns else np.nan,
+                "avgvalrows": float(family_summary["valrows"].dropna().mean()) if "valrows" in family_summary.columns else np.nan,
+                "avgtestrows": float(family_summary["testrows"].dropna().mean()) if "testrows" in family_summary.columns else np.nan,
+                "summarycsv": str(OUTDIR / "familygeneralizationsummary.csv"),
+            })
+
+    set_run_dirs(suite_root)
+    suite_df = pd.DataFrame(suite_rows).sort_values("experiment").reset_index(drop=True)
+    suite_df.to_csv(OUTDIR / "familyfrequencysuitesummary.csv", index=False)
+    return suite_df
 
 def df_to_xy(df):
     X = df[FEATURE_COLS].to_numpy(dtype=np.float32)
@@ -516,6 +615,7 @@ def df_to_xy(df):
     if np.any(np.isnan(y)) or np.any(np.isinf(y)):
         raise ValueError("Invalid values found in y")
     return X, y
+
 
 
 # ============================================================
@@ -784,11 +884,6 @@ def run_config_search(train_df, val_df, model_tag, logger, candidate_configs):
         params.update(candidate)
         params["device"] = DEVICE
 
-        logger.log("")
-        logger.log("==================================================")
-        logger.log(f"[INFO] Candidate {idx}/{len(candidate_configs)}")
-        logger.log(json.dumps(candidate, sort_keys=True))
-        logger.log("==================================================")
 
         booster = train_booster_with_safe_mape(
             dtrain=dtrain,
@@ -1380,47 +1475,61 @@ def run_aux_lomo(full_df, family_train_best_params_by_domain):
 # ============================================================
 
 def main():
-    with DualLogger(LOG_DIR / "bootstrap.log") as logger:
+    if RUN_ONLY_FAMILY_FREQUENCY_SUITE:
+        if "dataset_specs" not in CFG:
+            raise SystemExit("Frequency-aware suite requires the datasetspecs-based loader patch first.")
+        summary = run_family_frequency_suite(CFG["dataset_specs"])
+        print()
+        print(f"[INFO] VERSION {VERSION} FAMILY FREQUENCY SUITE COMPLETED")
+        print(summary.round(4).to_string(index=False))
+        print()
+        return
+
+    with DualLogger(LOGDIR / "bootstrap.log") as logger:
         logger.log(f"[INFO] Bootstrapping Version {VERSION}")
-        logger.log(f"[INFO] Tuning policy: {TUNING_POLICY}")
-        logger.log(f"[INFO] Device selected: {DEVICE}")
-        logger.log(f"[INFO] Dataset directory: {DATASET_DIR}")
-        logger.log(f"[INFO] Internal split mode: {CFG['internal_split_mode']}")
-        logger.log(f"[INFO] Full grid size: {len(GLOBAL_GRID)}")
-        logger.log(f"[INFO] Search budget per tuning run: {MAX_GLOBAL_SEARCH_TRIALS}")
-        logger.log(f"[INFO] Automatically discovered {len(CFG['csv_files'])} dataset files:")
-        for model_name, csv_path in sorted(CFG["csv_files"].items()):
-            logger.log(f"    - {model_name}: {csv_path}")
+        logger.log(f"[INFO] Tuning policy {TUNINGPOLICY}")
+        logger.log(f"[INFO] Device selected {DEVICE}")
+        logger.log(f"[INFO] Dataset directory {DATASETDIR}")
+        logger.log(f"[INFO] Internal split mode {CFG['internal_split_mode']}")
+        logger.log(f"[INFO] Full grid size {len(GLOBALGRID)}")
+        logger.log(f"[INFO] Search budget per tuning run {MAX_GLOBAL_SEARCH_TRIALS}")
 
-        full_df = load_all_datasets(CFG["csv_files"], logger)
-        validate_family_inventory(full_df, logger)
+        logger.log(f"[INFO] Automatically discovered {len(CFG['dataset_specs'])} dataset files:")
+        for spec in CFG["dataset_specs"]:
+            logger.log(
+                f"    - {spec['model_name']} @ {spec['freq_tag']} "
+                f"({spec['freq_mhz']} MHz): {spec['csv_path']}"
+            )
 
-    family_summary, family_tuning_summary = run_family_generalization_experiment(full_df)
-    full_summary, full_tuning_summary = run_final_full_model(full_df)
+        full_df = load_all_datasets(CFG["dataset_specs"], logger)
 
-    family_best_params_path = META_DIR / "family_generalization_best_params_by_domain.json"
+    validatefamilyinventory(full_df, logger)
+    family_summary, family_tuning_summary = runfamilygeneralizationexperiment(full_df)
+    full_summary, full_tuning_summary = runfinalfullmodel(full_df)
+
+    family_best_params_path = METADIR / "family_generalization_bestparams_by_domain.json"
     with open(family_best_params_path, "r", encoding="utf-8") as fp:
-        family_train_best_params_by_domain = json.load(fp)
+        family_train_bestparams_by_domain = json.load(fp)
 
-    baseline_summary = run_separate_per_model_baselines(full_df, family_train_best_params_by_domain)
+    baseline_summary = runseparatepermodelbaselines(full_df, family_train_bestparams_by_domain)
 
-    if RUN_AUX_L0MO:
-        aux_lomo_summary = run_aux_lomo(full_df, family_train_best_params_by_domain)
+    if RUN_AUX_LOMO:
+        aux_lomo_summary = runauxlomofull_df(full_df, family_train_bestparams_by_domain)
     else:
         aux_lomo_summary = pd.DataFrame()
 
-    print("\n============================================================")
+    print()
     print(f"[INFO] VERSION {VERSION} COMPLETED")
-    print("[INFO] Family generalization summary:")
+    print("[INFO] Family generalization summary")
     print(family_summary.round(4).to_string(index=False))
-    print("[INFO] Full model summary:")
+    print("[INFO] Full model summary")
     print(full_summary.round(4).to_string(index=False))
-    print("[INFO] Per-model baseline summary:")
+    print("[INFO] Per-model baseline summary")
     print(baseline_summary.round(4).to_string(index=False))
     if len(aux_lomo_summary):
-        print("[INFO] Auxiliary LOMO summary:")
+        print("[INFO] Auxiliary LOMO summary")
         print(aux_lomo_summary.round(4).to_string(index=False))
-    print("============================================================\n")
+    print()
 
 
 if __name__ == "__main__":

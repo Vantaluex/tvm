@@ -1,4 +1,5 @@
 import csv
+import os
 import time
 import queue
 import hashlib
@@ -52,9 +53,27 @@ def trace_fingerprint(trace):
 # HYPERPARAMETERS
 # =========================
 N = 20000
+
 start_N = 0
-MODELNAME = "convnextv2-tiny"
-FREQ = "2617"
+BASE_DB_DIR = "complete_tuning_logs_20000"
+MODEL_JOBS = [
+   # {"model": "convnextv2-tiny", "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "deberta-v3-base",        "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "deepseekr1-qwen-14b",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "densenet169",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "exaone-deep-7.8B",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "exaone3.5-7.8b",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "llama-3.1-8b",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "mask2former-swin-small",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "mobilenetv3large",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "modernbert-base",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "qwen2.5-3b",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "qwen2.5-9B",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "resnet50",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "rtdetr-r50",     "freq": "2595", "start_n": 0, "N": 20000},
+    {"model": "segformer-b2",     "freq": "2595", "start_n": 0, "N": 20000},
+]
+
 
 WARMUP_SECONDS = 1.2
 MEASURE_SECONDS = 0.3  
@@ -64,9 +83,16 @@ PER_RECORD_TIMEOUT_SECONDS = 30
 CHUNK_SIZE = 64
 CHUNK_TIMEOUT_SECONDS = 600
 
-DB_WORK_DIR = "complete_tuning_logs_20000/tuning_logs_" + MODELNAME
-OUT_PATH = "dataset_" + MODELNAME + "@" + FREQ + "x" + str(start_N) + "~20000.csv"
-SKIPPED_PATH = "skipped_" + MODELNAME + "@" + FREQ + "x" + str(start_N) + "~20000.txt"
+def build_paths(job):
+    model = job["model"]
+    freq = job["freq"]
+    start_n = job["start_n"]
+    max_n = job["N"]
+
+    db_work_dir = os.path.join(BASE_DB_DIR, f"tuning_logs_{model}")
+    out_path = f"dataset_{model}@{freq}x{start_n}~{max_n}.csv"
+    skipped_path = f"skipped_{model}@{freq}x{start_n}~{max_n}.txt"
+    return db_work_dir, out_path, skipped_path
 
 def poll_nvml_power(stop_event, samples, gpu_index, t0):
     handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
@@ -274,9 +300,9 @@ def drain_queue_nonblocking(result_queue, writer, out_file, skipped_records, act
         handle_result(result, writer, out_file, skipped_records, actual_N, finished_set)
 
 
-def run_one_record_with_timeout(ctx, abs_idx, writer, out_file, skipped_records, actual_N):
+def run_one_record_with_timeout(ctx, abs_idx, db_work_dir, writer, out_file, skipped_records, actual_N):
     result_queue = ctx.Queue()
-    p = ctx.Process(target=process_one_record, args=(abs_idx, DB_WORK_DIR, result_queue))
+    p = ctx.Process(target=process_one_record, args=(abs_idx, db_work_dir, result_queue))
     p.start()
     p.join(PER_RECORD_TIMEOUT_SECONDS)
 
@@ -305,9 +331,9 @@ def run_one_record_with_timeout(ctx, abs_idx, writer, out_file, skipped_records,
     handle_result(result, writer, out_file, skipped_records, actual_N, finished_set)
 
 
-def run_chunk_with_resume(ctx, chunk, writer, out_file, skipped_records, actual_N):
+def run_chunk_with_resume(ctx, chunk, db_work_dir, writer, out_file, skipped_records, actual_N):
     result_queue = ctx.Queue()
-    p = ctx.Process(target=process_chunk, args=(chunk, DB_WORK_DIR, result_queue))
+    p = ctx.Process(target=process_chunk, args=(chunk, db_work_dir, result_queue))
     p.start()
 
     start_t = time.time()
@@ -354,17 +380,24 @@ def run_chunk_with_resume(ctx, chunk, writer, out_file, skipped_records, actual_
     if unfinished:
         print(f"[WARN] Chunk incomplete. Finished {len(finished_in_chunk)}/{len(chunk)}. Retrying unfinished individually: {unfinished}")
         for abs_idx in unfinished:
-            run_one_record_with_timeout(ctx, abs_idx, writer, out_file, skipped_records, actual_N)
+            run_one_record_with_timeout(ctx, abs_idx, db_work_dir, writer, out_file, skipped_records, actual_N)
     else:
         print(f"[INFO] Chunk completed fully ({len(chunk)} records).")
 
+def run_job(job):
+    model = job["model"]
+    db_work_dir, out_path, skipped_path = build_paths(job)
 
-def main():
-    db = ms.database.JSONDatabase(work_dir=DB_WORK_DIR)
+    print(f"\n[JOB] Starting model: {model}")
+    print(f"[JOB] DB: {db_work_dir}")
+    print(f"[JOB] OUT: {out_path}")
+
+    db = ms.database.JSONDatabase(work_dir=db_work_dir)
     all_recs = db.get_all_tuning_records()
 
-    actual_N = min(N, len(all_recs))
-    recs = list(range(start_N, actual_N))
+    start_n = job["start_n"]
+    actual_N = min(job["N"], len(all_recs))
+    recs = list(range(start_n, actual_N))
     chunks = chunkify(recs, CHUNK_SIZE)
 
     print(f"[INFO] Loaded {len(recs)} tuning records from database.")
@@ -375,7 +408,7 @@ def main():
     ctx = mp.get_context("spawn")
     skipped_records = []
 
-    with open(OUT_PATH, "w", newline="") as f:
+    with open(out_path, "w", newline="") as f:
         w = csv.writer(f)
         header = ["i", "workload_hash", "trace_hash", "n_stores", "lat_mean_ms", "avg_power_w"]
         header += [f"f{k}" for k in range(656)]
@@ -384,15 +417,15 @@ def main():
 
         for chunk_id, chunk in enumerate(chunks):
             print(f"[INFO] Starting chunk {chunk_id + 1}/{len(chunks)}: {chunk}")
-            run_chunk_with_resume(ctx, chunk, w, f, skipped_records, actual_N)
+            run_chunk_with_resume(ctx, chunk, db_work_dir, w, f, skipped_records, actual_N)
             f.flush()
 
-    with open(SKIPPED_PATH, "w") as sf:
+    with open(skipped_path, "w") as sf:
         for idx, reason in skipped_records:
             sf.write(f"{idx}\t{reason}\n")
 
-    print("wrote:", OUT_PATH)
-    print("wrote:", SKIPPED_PATH)
+    print("wrote:", out_path)
+    print("wrote:", skipped_path)
     print("\n[INFO] Skipped records summary:")
     print(f"[INFO] Total skipped: {len(skipped_records)}")
     if skipped_records:
@@ -402,6 +435,10 @@ def main():
             print(f"  ... and {len(skipped_records) - 50} more")
     else:
         print("  None")
+
+def main():
+    for job in MODEL_JOBS:
+        run_job(job)
 
 
 
