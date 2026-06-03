@@ -1,3 +1,7 @@
+19756	timeout
+19760	timeout
+19761	timeout
+19819	timeout
 19832	timeout
 19837	timeout
 19866	error: Traceback (most recent call last):
@@ -80,6 +84,7 @@ extern "C" __global__ void __launch_bounds__(32) main_kernel(float* __restrict__
 }
 
 
+19880	timeout
 19883	error: Traceback (most recent call last):
   1: tvm::runtime::detail::PackFuncVoidAddr_<4, tvm::runtime::CUDAWrappedFunc>(tvm::runtime::CUDAWrappedFunc, std::vector<tvm::runtime::detail::ArgConvertCode, std::allocator<tvm::runtime::detail::ArgConvertCode> > const&)::{lambda(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)#1}::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*) const
         at /home/vantaluex/tvm19/src/runtime/cuda/../pack_args.h:185

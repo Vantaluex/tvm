@@ -1,0 +1,81 @@
+17409	error: Traceback (most recent call last):
+  1: tvm::runtime::detail::PackFuncVoidAddr_<4, tvm::runtime::CUDAWrappedFunc>(tvm::runtime::CUDAWrappedFunc, std::vector<tvm::runtime::detail::ArgConvertCode, std::allocator<tvm::runtime::detail::ArgConvertCode> > const&)::{lambda(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)#1}::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*) const
+        at /home/vantaluex/tvm19/src/runtime/cuda/../pack_args.h:185
+  0: tvm::runtime::CUDAWrappedFunc::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*, void**) const
+        at /home/vantaluex/tvm19/src/runtime/cuda/cuda_module.cc:206
+  File "/home/vantaluex/tvm19/src/runtime/cuda/cuda_module.cc", line 206
+TVMError: CUDALaunch Error: CUDA_ERROR_OUT_OF_MEMORY
+ grid=(1,1,1),  block=(32,1,1)
+// func_name=main_kernel
+// CUDA Source
+// -----------
+
+#if (((__CUDACC_VER_MAJOR__ == 11) && (__CUDACC_VER_MINOR__ >= 4)) || \
+     (__CUDACC_VER_MAJOR__ > 11))
+#define TVM_ENABLE_L2_PREFETCH 1
+#else
+#define TVM_ENABLE_L2_PREFETCH 0
+#endif
+
+#ifdef _WIN32
+  using uint = unsigned int;
+  using uchar = unsigned char;
+  using ushort = unsigned short;
+  using int64_t = long long;
+  using uint64_t = unsigned long long;
+#else
+  #define uint unsigned int
+  #define uchar unsigned char
+  #define ushort unsigned short
+  #define int64_t long long
+  #define uint64_t unsigned long long
+#endif
+extern "C" __global__ void __launch_bounds__(32) main_kernel(float* __restrict__ conv2d_nchw, float* __restrict__ inp_0, float* __restrict__ weight);
+extern "C" __global__ void __launch_bounds__(32) main_kernel(float* __restrict__ conv2d_nchw, float* __restrict__ inp_0, float* __restrict__ weight) {
+  float conv2d_nchw_local[102400];
+  __shared__ float pad_temp_shared[6400];
+  __shared__ float weight_shared[2048];
+  for (int rc_0 = 0; rc_0 < 128; ++rc_0) {
+    __syncthreads();
+    for (int ax0_ax1_ax2_ax3_fused = 0; ax0_ax1_ax2_ax3_fused < 6400; ++ax0_ax1_ax2_ax3_fused) {
+      pad_temp_shared[ax0_ax1_ax2_ax3_fused] = inp_0[((((ax0_ax1_ax2_ax3_fused / 3200) * 409600) + (rc_0 * 3200)) + (ax0_ax1_ax2_ax3_fused % 3200))];
+    }
+    for (int ax0_ax1_ax2_ax3_fused_1 = 0; ax0_ax1_ax2_ax3_fused_1 < 2048; ++ax0_ax1_ax2_ax3_fused_1) {
+      weight_shared[ax0_ax1_ax2_ax3_fused_1] = weight[((((ax0_ax1_ax2_ax3_fused_1 >> 1) * 256) + (rc_0 * 2)) + (ax0_ax1_ax2_ax3_fused_1 & 1))];
+    }
+    __syncthreads();
+    for (int rc_1 = 0; rc_1 < 2; ++rc_1) {
+      for (int yy_3 = 0; yy_3 < 2; ++yy_3) {
+        for (int xx_3 = 0; xx_3 < 10; ++xx_3) {
+          for (int nn_4 = 0; nn_4 < 2; ++nn_4) {
+            for (int ff_4 = 0; ff_4 < 2; ++ff_4) {
+              for (int yy_4 = 0; yy_4 < 20; ++yy_4) {
+                if (((rc_0 * 2) + rc_1) == 0) {
+                  for (int vthread_x_s = 0; vthread_x_s < 64; ++vthread_x_s) {
+                    conv2d_nchw_local[((((((vthread_x_s * 1600) + (nn_4 * 800)) + (ff_4 * 400)) + (yy_3 * 200)) + (yy_4 * 10)) + xx_3)] = 0.000000e+00f;
+                  }
+                }
+                for (int vthread_x_s_1 = 0; vthread_x_s_1 < 64; ++vthread_x_s_1) {
+                  conv2d_nchw_local[((((((vthread_x_s_1 * 1600) + (nn_4 * 800)) + (ff_4 * 400)) + (yy_3 * 200)) + (yy_4 * 10)) + xx_3)] = (conv2d_nchw_local[((((((vthread_x_s_1 * 1600) + (nn_4 * 800)) + (ff_4 * 400)) + (yy_3 * 200)) + (yy_4 * 10)) + xx_3)] + (pad_temp_shared[((((((nn_4 * 3200) + (rc_1 * 1600)) + (yy_3 * 800)) + (yy_4 * 40)) + ((((int)threadIdx.x) & 3) * 10)) + xx_3)] * weight_shared[((((vthread_x_s_1 * 32) + ((((int)threadIdx.x) >> 2) * 4)) + (ff_4 * 2)) + rc_1)]));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  for (int ax0 = 0; ax0 < 2; ++ax0) {
+    for (int ax1 = 0; ax1 < 2; ++ax1) {
+      for (int ax2 = 0; ax2 < 40; ++ax2) {
+        for (int ax3 = 0; ax3 < 10; ++ax3) {
+          for (int vthread_x_s_2 = 0; vthread_x_s_2 < 64; ++vthread_x_s_2) {
+            conv2d_nchw[(((((((ax0 * 1638400) + (vthread_x_s_2 * 25600)) + ((((int)threadIdx.x) >> 2) * 3200)) + (ax1 * 1600)) + (ax2 * 40)) + ((((int)threadIdx.x) & 3) * 10)) + ax3)] = conv2d_nchw_local[(((((vthread_x_s_2 * 1600) + (ax0 * 800)) + (ax1 * 400)) + (ax2 * 10)) + ax3)];
+          }
+        }
+      }
+    }
+  }
+}
+
+

@@ -57,21 +57,21 @@ N = 20000
 start_N = 0
 BASE_DB_DIR = "complete_tuning_logs_20000"
 MODEL_JOBS = [
-   # {"model": "convnextv2-tiny", "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "deberta-v3-base",        "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "deepseekr1-qwen-14b",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "densenet169",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "exaone-deep-7.8B",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "exaone3.5-7.8b",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "llama-3.1-8b",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "mask2former-swin-small",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "mobilenetv3large",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "modernbert-base",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "qwen2.5-3b",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "qwen2.5-9B",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "resnet50",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "rtdetr-r50",     "freq": "2595", "start_n": 0, "N": 20000},
-    {"model": "segformer-b2",     "freq": "2595", "start_n": 0, "N": 20000},
+    #{"model": "convnextv2-tiny",            "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "deberta-v3-base",            "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "deepseekr1-qwen-14b",        "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "densenet169",                "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "exaone-deep-7.8B",           "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "exaone3.5-7.8b",             "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "llama-3.1-8b",               "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "mask2former-swin-small",     "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "mobilenetv3large",           "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "modernbert-base",            "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "qwen2.5-3b",                 "freq": "1500", "start_n": 0, "N": 20000},
+    #{"model": "qwen2.5-9B",                 "freq": "1500", "start_n": 0, "N": 20000},
+    {"model": "resnet50",                   "freq": "1500", "start_n": 10400, "N": 20000},
+    {"model": "rtdetr-r50",                 "freq": "1500", "start_n": 0, "N": 20000},
+    {"model": "segformer-b2",               "freq": "1500", "start_n": 0, "N": 20000},
 ]
 
 

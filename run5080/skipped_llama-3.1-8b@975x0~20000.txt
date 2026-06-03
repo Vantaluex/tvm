@@ -1,14 +1,98 @@
+19630	timeout
+19632	timeout
+19633	timeout
+19634	timeout
+19635	timeout
+19644	timeout
+19691	timeout
+19692	timeout
+19693	timeout
+19695	timeout
+19704	timeout
+19708	timeout
+19711	timeout
+19738	timeout
+19740	timeout
+19742	timeout
+19743	timeout
+19744	timeout
+19746	timeout
+19747	timeout
+19748	timeout
+19750	timeout
+19751	timeout
+19753	timeout
+19756	timeout
+19757	timeout
+19759	timeout
+19760	timeout
+19761	timeout
+19762	timeout
+19763	timeout
+19764	timeout
+19765	timeout
+19766	timeout
+19767	timeout
+19769	timeout
+19771	timeout
+19772	timeout
+19773	timeout
+19775	timeout
+19802	timeout
+19803	timeout
+19804	timeout
+19805	timeout
+19806	timeout
+19809	timeout
+19811	timeout
+19812	timeout
+19814	timeout
+19816	timeout
+19817	timeout
+19818	timeout
+19819	timeout
+19820	timeout
+19821	timeout
+19822	timeout
+19823	timeout
+19824	timeout
+19825	timeout
+19826	timeout
+19827	timeout
+19829	timeout
+19830	timeout
 19831	timeout
+19832	timeout
+19833	timeout
 19834	timeout
 19835	timeout
 19836	timeout
+19837	timeout
+19838	timeout
+19839	timeout
+19865	timeout
+19866	timeout
+19867	timeout
+19868	timeout
+19870	timeout
+19871	timeout
+19874	timeout
+19875	timeout
+19876	timeout
+19877	timeout
+19878	timeout
+19880	timeout
+19883	timeout
 19884	timeout
 19887	timeout
 19888	timeout
 19890	timeout
 19891	timeout
 19893	timeout
+19898	timeout
+19900	timeout
 19902	timeout
+19903	timeout
 19930	error: Traceback (most recent call last):
   1: tvm::runtime::detail::PackFuncVoidAddr_<4, tvm::runtime::CUDAWrappedFunc>(tvm::runtime::CUDAWrappedFunc, std::vector<tvm::runtime::detail::ArgConvertCode, std::allocator<tvm::runtime::detail::ArgConvertCode> > const&)::{lambda(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)#1}::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*) const
         at /home/vantaluex/tvm19/src/runtime/cuda/../pack_args.h:185
@@ -82,8 +166,13 @@ extern "C" __global__ void __launch_bounds__(32) main_kernel(float* __restrict__
 }
 
 
+19936	timeout
+19945	timeout
+19947	timeout
 19948	timeout
+19949	timeout
 19951	timeout
+19955	timeout
 19956	error: Traceback (most recent call last):
   1: tvm::runtime::detail::PackFuncVoidAddr_<4, tvm::runtime::CUDAWrappedFunc>(tvm::runtime::CUDAWrappedFunc, std::vector<tvm::runtime::detail::ArgConvertCode, std::allocator<tvm::runtime::detail::ArgConvertCode> > const&)::{lambda(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)#1}::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*) const
         at /home/vantaluex/tvm19/src/runtime/cuda/../pack_args.h:185
@@ -166,9 +255,86 @@ extern "C" __global__ void __launch_bounds__(32) main_kernel(float* __restrict__
 19957	timeout
 19958	timeout
 19959	timeout
-19960	timeout
+19960	error: Traceback (most recent call last):
+  1: tvm::runtime::detail::PackFuncVoidAddr_<4, tvm::runtime::CUDAWrappedFunc>(tvm::runtime::CUDAWrappedFunc, std::vector<tvm::runtime::detail::ArgConvertCode, std::allocator<tvm::runtime::detail::ArgConvertCode> > const&)::{lambda(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)#1}::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*) const
+        at /home/vantaluex/tvm19/src/runtime/cuda/../pack_args.h:185
+  0: tvm::runtime::CUDAWrappedFunc::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*, void**) const
+        at /home/vantaluex/tvm19/src/runtime/cuda/cuda_module.cc:206
+  File "/home/vantaluex/tvm19/src/runtime/cuda/cuda_module.cc", line 206
+TVMError: CUDALaunch Error: CUDA_ERROR_OUT_OF_MEMORY
+ grid=(8,1,1),  block=(64,1,1)
+// func_name=main_kernel
+// CUDA Source
+// -----------
+
+#if (((__CUDACC_VER_MAJOR__ == 11) && (__CUDACC_VER_MINOR__ >= 4)) || \
+     (__CUDACC_VER_MAJOR__ > 11))
+#define TVM_ENABLE_L2_PREFETCH 1
+#else
+#define TVM_ENABLE_L2_PREFETCH 0
+#endif
+
+#ifdef _WIN32
+  using uint = unsigned int;
+  using uchar = unsigned char;
+  using ushort = unsigned short;
+  using int64_t = long long;
+  using uint64_t = unsigned long long;
+#else
+  #define uint unsigned int
+  #define uchar unsigned char
+  #define ushort unsigned short
+  #define int64_t long long
+  #define uint64_t unsigned long long
+#endif
+extern "C" __global__ void __launch_bounds__(64) main_kernel(float* __restrict__ inp_0, float* __restrict__ lv, float* __restrict__ matmul);
+extern "C" __global__ void __launch_bounds__(64) main_kernel(float* __restrict__ inp_0, float* __restrict__ lv, float* __restrict__ matmul) {
+  float matmul_local[114688];
+  __shared__ float inp_0_shared[4096];
+  __shared__ float lv_shared[7168];
+  for (int k_0 = 0; k_0 < 2048; ++k_0) {
+    __syncthreads();
+    for (int ax0_ax1_ax2_fused = 0; ax0_ax1_ax2_fused < 4096; ++ax0_ax1_ax2_fused) {
+      inp_0_shared[ax0_ax1_ax2_fused] = inp_0[((((ax0_ax1_ax2_fused >> 1) * 4096) + (k_0 * 2)) + (ax0_ax1_ax2_fused & 1))];
+    }
+    for (int ax0_ax1_fused = 0; ax0_ax1_fused < 7168; ++ax0_ax1_fused) {
+      lv_shared[ax0_ax1_fused] = lv[((((k_0 * 57344) + ((ax0_ax1_fused / 3584) * 28672)) + (((int)blockIdx.x) * 3584)) + (ax0_ax1_fused % 3584))];
+    }
+    __syncthreads();
+    for (int i0_3 = 0; i0_3 < 2; ++i0_3) {
+      for (int i2_3 = 0; i2_3 < 56; ++i2_3) {
+        for (int k_2 = 0; k_2 < 2; ++k_2) {
+          for (int i1_4 = 0; i1_4 < 2; ++i1_4) {
+            for (int i2_4 = 0; i2_4 < 4; ++i2_4) {
+              if (((k_0 * 2) + k_2) == 0) {
+                for (int vthread_x_s = 0; vthread_x_s < 128; ++vthread_x_s) {
+                  matmul_local[(((((vthread_x_s * 896) + (i0_3 * 448)) + (i1_4 * 224)) + (i2_3 * 4)) + i2_4)] = 0.000000e+00f;
+                }
+              }
+              for (int vthread_x_s_1 = 0; vthread_x_s_1 < 128; ++vthread_x_s_1) {
+                matmul_local[(((((vthread_x_s_1 * 896) + (i0_3 * 448)) + (i1_4 * 224)) + (i2_3 * 4)) + i2_4)] = (matmul_local[(((((vthread_x_s_1 * 896) + (i0_3 * 448)) + (i1_4 * 224)) + (i2_3 * 4)) + i2_4)] + (inp_0_shared[(((((((vthread_x_s_1 >> 6) * 2048) + (i0_3 * 1024)) + (((vthread_x_s_1 & 63) >> 3) * 128)) + ((((int)threadIdx.x) >> 1) * 4)) + (i1_4 * 2)) + k_2)] * lv_shared[(((((k_2 * 3584) + ((vthread_x_s_1 & 7) * 448)) + ((((int)threadIdx.x) & 1) * 224)) + (i2_3 * 4)) + i2_4)]));
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  for (int ax0 = 0; ax0 < 2; ++ax0) {
+    for (int ax1 = 0; ax1 < 2; ++ax1) {
+      for (int ax2 = 0; ax2 < 224; ++ax2) {
+        for (int vthread_x_s_2 = 0; vthread_x_s_2 < 128; ++vthread_x_s_2) {
+          matmul[((((((((((vthread_x_s_2 >> 6) * 29360128) + (ax0 * 14680064)) + (((vthread_x_s_2 & 63) >> 3) * 1835008)) + ((((int)threadIdx.x) >> 1) * 57344)) + (ax1 * 28672)) + (((int)blockIdx.x) * 3584)) + ((vthread_x_s_2 & 7) * 448)) + ((((int)threadIdx.x) & 1) * 224)) + ax2)] = matmul_local[((((vthread_x_s_2 * 896) + (ax0 * 448)) + (ax1 * 224)) + ax2)];
+        }
+      }
+    }
+  }
+}
+
+
 19961	timeout
 19963	timeout
+19965	timeout
 19966	error: Traceback (most recent call last):
   1: tvm::runtime::detail::PackFuncVoidAddr_<4, tvm::runtime::CUDAWrappedFunc>(tvm::runtime::CUDAWrappedFunc, std::vector<tvm::runtime::detail::ArgConvertCode, std::allocator<tvm::runtime::detail::ArgConvertCode> > const&)::{lambda(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)#1}::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*) const
         at /home/vantaluex/tvm19/src/runtime/cuda/../pack_args.h:185
@@ -248,6 +414,7 @@ extern "C" __global__ void __launch_bounds__(32) main_kernel(float* __restrict__
 }
 
 
+19967	timeout
 19971	error: Traceback (most recent call last):
   1: tvm::runtime::detail::PackFuncVoidAddr_<4, tvm::runtime::CUDAWrappedFunc>(tvm::runtime::CUDAWrappedFunc, std::vector<tvm::runtime::detail::ArgConvertCode, std::allocator<tvm::runtime::detail::ArgConvertCode> > const&)::{lambda(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)#1}::operator()(tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*) const
         at /home/vantaluex/tvm19/src/runtime/cuda/../pack_args.h:185
@@ -711,3 +878,5 @@ extern "C" __global__ void __launch_bounds__(32) main_kernel(float* __restrict__
 }
 
 
+19998	timeout
+19999	timeout
