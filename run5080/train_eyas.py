@@ -78,7 +78,7 @@ VERSION, TUNING_POLICY, SUITE_MODE, SUITE_FREQ_TAGS, SELECTED_MODELS = parse_cli
 # ============================================================
 RUN_ONLY_MODEL_BASED_SUITE = True
 REQUIRED_SUITE_FREQ_TAGS = ("2295x0", "2617x0")
-COMBINED_OUTPUT_ROOT = Path("midterm-report-output")
+COMBINED_OUTPUT_ROOT = Path("xgboost-output")
 
 FREQ_TAG_COL = "freq_tag"
 FREQ_MHZ_COL = "freq_mhz"

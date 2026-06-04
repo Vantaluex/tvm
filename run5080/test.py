@@ -13,7 +13,7 @@ from matplotlib.lines import Line2D
 #MODEL_NAME = "deepseekr1-qwen-14b"
 #MODEL_NAME = "densenet169"
 #MODEL_NAME = "exaone-deep-7.8B"
-MODEL_NAME = "exaone3.5-7.8b"
+#MODEL_NAME = "exaone3.5-7.8b"
 #MODEL_NAME = "llama-3.1-8b"
 #MODEL_NAME = "mask2former-swin-small"
 #MODEL_NAME = "mobilenetv3large"
@@ -21,17 +21,13 @@ MODEL_NAME = "exaone3.5-7.8b"
 #MODEL_NAME = "qwen2.5-3b"
 #MODEL_NAME = "qwen2.5-9B"
 #MODEL_NAME = "resnet50"
-#MODEL_NAME = "rtdetr-r50"
-#MODEL_NAME = "segformer-b2"
+#MODEL_NAME = "rtdetr-r50" 
+#MODEL_NAME = "segformer-b2" 
 UNDERSCORE_NAME = MODEL_NAME.replace("-", "_")
 DATASET_DIR = Path("/home/vantaluex/tvm19/run5080/completed_datasets")
-MODEL_JSON = Path(f"/home/vantaluex/tvm19/run5080/midterm-report-output/version_B/model_split_suite/fully_pooled_model_split/B_fully_pooled_model_split_pooled.json")
-OUTPUT_CSV = Path(f"/home/vantaluex/tvm19/run5080/plotted_datas/Fullmodel_2026_05_04/Fullmodel_{MODEL_NAME}_all_freq_actual_vs_predicted.csv")
-OUTPUT_PNG = Path(f"/home/vantaluex/tvm19/run5080/plotted_datas/Fullmodel_2026_05_04/Fullmodel_{MODEL_NAME}_all_freq_prediction_accuracy.png")
-#individual
-#MODEL_JSON = Path(f"/home/vantaluex/tvm19/run5080/midterm-report-output/version_B/model_split_suite/{UNDERSCORE_NAME}_model_split/B_{UNDERSCORE_NAME}_model_split_pooled.json")
-#OUTPUT_CSV = Path(f"/home/vantaluex/tvm19/run5080/plotted_datas/{MODEL_NAME}_all_freq_actual_vs_predicted.csv")
-#OUTPUT_PNG = Path(f"/home/vantaluex/tvm19/run5080/plotted_datas/{MODEL_NAME}_all_freq_prediction_accuracy.png")
+MODEL_JSON = Path(f"/home/vantaluex/tvm19/run5080/midterm-report-output/version_B/model_split_suite/{UNDERSCORE_NAME}_model_split/B_{UNDERSCORE_NAME}_model_split_pooled.json")
+OUTPUT_CSV = Path(f"/home/vantaluex/tvm19/run5080/plotted_datas/{MODEL_NAME}_all_freq_actual_vs_predicted.csv")
+OUTPUT_PNG = Path(f"/home/vantaluex/tvm19/run5080/plotted_datas/{MODEL_NAME}_all_freq_prediction_accuracy.png")
 
 # Set False if you want one unified cloud instead of per-frequency colors
 COLOR_BY_FREQ = True
@@ -203,10 +199,7 @@ ax.grid(True, alpha=0.15)
 for spine in ax.spines.values():
     spine.set_alpha(0.3)
 
-if MODEL_NAME == "exaone3.5-7.8b":
-    title = f"Prediction accuracy for {pretty_model_name('exaone4.0-1.2b')}"
-else:
-    title = f"Prediction accuracy for {pretty_model_name(MODEL_NAME)}"
+title = f"Prediction accuracy for {pretty_model_name(MODEL_NAME)}"
 ax.set_title(title, pad=12)
 
 summary = f"MAPE {overall_mape:.2f}% | MAE {overall_mae:.2f} W | N = {len(combined):,}"
